@@ -446,17 +446,15 @@ pub enum KeybindingAction {
     ToggleSettingsOverlay,
     ToggleFpsHud,
     ReloadGameView,
-    HideToTray,
     ToggleAudioMute,
     ToggleFullscreen,
 }
 
 impl KeybindingAction {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::ToggleSettingsOverlay,
         Self::ToggleFpsHud,
         Self::ReloadGameView,
-        Self::HideToTray,
         Self::ToggleAudioMute,
         Self::ToggleFullscreen,
     ];
@@ -575,7 +573,6 @@ pub struct Keybindings {
     pub toggle_settings_overlay: String,
     pub toggle_fps_hud: String,
     pub reload_game_view: String,
-    pub hide_to_tray: String,
     pub toggle_audio_mute: String,
     pub toggle_fullscreen: String,
 }
@@ -586,7 +583,6 @@ impl Default for Keybindings {
             toggle_settings_overlay: "F2".to_string(),
             toggle_fps_hud: "F3".to_string(),
             reload_game_view: "F5".to_string(),
-            hide_to_tray: "F9".to_string(),
             toggle_audio_mute: "F10".to_string(),
             toggle_fullscreen: "F11".to_string(),
         }
@@ -599,7 +595,6 @@ impl Keybindings {
             KeybindingAction::ToggleSettingsOverlay => &self.toggle_settings_overlay,
             KeybindingAction::ToggleFpsHud => &self.toggle_fps_hud,
             KeybindingAction::ReloadGameView => &self.reload_game_view,
-            KeybindingAction::HideToTray => &self.hide_to_tray,
             KeybindingAction::ToggleAudioMute => &self.toggle_audio_mute,
             KeybindingAction::ToggleFullscreen => &self.toggle_fullscreen,
         }
@@ -610,7 +605,6 @@ impl Keybindings {
             KeybindingAction::ToggleSettingsOverlay => self.toggle_settings_overlay = shortcut,
             KeybindingAction::ToggleFpsHud => self.toggle_fps_hud = shortcut,
             KeybindingAction::ReloadGameView => self.reload_game_view = shortcut,
-            KeybindingAction::HideToTray => self.hide_to_tray = shortcut,
             KeybindingAction::ToggleAudioMute => self.toggle_audio_mute = shortcut,
             KeybindingAction::ToggleFullscreen => self.toggle_fullscreen = shortcut,
         }
@@ -625,7 +619,7 @@ impl Keybindings {
 
     pub fn validate_and_normalize(&self) -> Result<Self, KeybindingError> {
         let mut normalized = Self::default();
-        let mut seen: Vec<(KeybindingAction, String)> = Vec::with_capacity(6);
+        let mut seen: Vec<(KeybindingAction, String)> = Vec::with_capacity(5);
         for action in KeybindingAction::ALL {
             let raw = self.get(action);
             let Some(clean) = normalize_keybinding(raw) else {
@@ -937,7 +931,6 @@ impl ClientController {
             KeybindingAction::ToggleSettingsOverlay => self.toggle_settings_overlay(),
             KeybindingAction::ToggleFpsHud => self.toggle_fps_hud(),
             KeybindingAction::ReloadGameView => vec![PlatformEffect::ReloadGameView],
-            KeybindingAction::HideToTray => self.hide_to_tray(),
             KeybindingAction::ToggleAudioMute => self.toggle_audio_mute(),
             KeybindingAction::ToggleFullscreen => self.toggle_fullscreen(),
         }

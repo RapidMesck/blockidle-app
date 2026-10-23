@@ -279,7 +279,6 @@ fn initializes_default_client_settings_and_game_view_url_when_config_missing() {
             toggle_settings_overlay: "F2".to_string(),
             toggle_fps_hud: "F3".to_string(),
             reload_game_view: "F5".to_string(),
-            hide_to_tray: "F9".to_string(),
             toggle_audio_mute: "F10".to_string(),
             toggle_fullscreen: "F11".to_string(),
         }
@@ -305,7 +304,6 @@ fn persists_client_settings_to_disk_and_restores_on_reload() {
             toggle_settings_overlay: "Ctrl+F2".to_string(),
             toggle_fps_hud: "F4".to_string(),
             reload_game_view: "Ctrl+R".to_string(),
-            hide_to_tray: "Alt+F9".to_string(),
             toggle_audio_mute: "F8".to_string(),
             toggle_fullscreen: "Alt+Enter".to_string(),
         },
@@ -1370,10 +1368,13 @@ fn dispatches_default_and_custom_keybindings_when_focused_and_closes_overlay_on_
         }))
     );
 
-    // F9 hides to system tray (which also unfocuses/hides the window)
-    let f9_effects = controller.trigger_keybinding("F9");
+    // F9 is no longer a keybinding
+    assert!(controller.trigger_keybinding("F9").is_empty());
+
+    // Hiding to tray unfocuses/hides the window
+    let tray_effects = controller.hide_to_tray();
     assert!(!controller.is_window_visible());
-    assert!(f9_effects.contains(&PlatformEffect::SetWindowVisible(false)));
+    assert!(tray_effects.contains(&PlatformEffect::SetWindowVisible(false)));
 
     // While hidden/unfocused, keybindings are ignored
     assert!(controller.trigger_keybinding("F2").is_empty());
@@ -1511,6 +1512,9 @@ if (!lastSettingsMsg ||
 }
 
 // Interactive Keybinding recording:
+if (shadow.getElementById('blockidle-keybind-hide_to_tray')) {
+    throw new Error('Expected #blockidle-keybind-hide_to_tray to be removed from Settings Overlay');
+}
 // 1. Click Toggle FPS HUD keybinding button -> enters recording mode, Escape cancels recording WITHOUT closing overlay
 const hudKeyBtn = shadow.getElementById('blockidle-keybind-toggle_fps_hud');
 if (!hudKeyBtn) {

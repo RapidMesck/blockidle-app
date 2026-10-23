@@ -115,7 +115,6 @@
         { key: 'toggle_settings_overlay', label: 'Toggle Settings Overlay' },
         { key: 'toggle_fps_hud', label: 'Toggle FPS HUD' },
         { key: 'reload_game_view', label: 'Reload Game View' },
-        { key: 'hide_to_tray', label: 'Hide to System Tray' },
         { key: 'toggle_audio_mute', label: 'Toggle Audio Mute' },
         { key: 'toggle_fullscreen', label: 'Toggle Fullscreen' }
     ];
@@ -124,7 +123,6 @@
         toggle_settings_overlay: 'F2',
         toggle_fps_hud: 'F3',
         reload_game_view: 'F5',
-        hide_to_tray: 'F9',
         toggle_audio_mute: 'F10',
         toggle_fullscreen: 'F11'
     };

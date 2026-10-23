@@ -175,6 +175,14 @@ const window = {
     },
     document: document
 };
+const mockStorage = {};
+const localStorage = {
+    getItem: (k) => mockStorage[k] !== undefined ? mockStorage[k] : null,
+    setItem: (k, v) => { mockStorage[k] = String(v); },
+    removeItem: (k) => { delete mockStorage[k]; }
+};
+window.localStorage = localStorage;
+globalThis.localStorage = localStorage;
 globalThis.window = window;
 globalThis.document = document;
 globalThis.performance = window.performance;
@@ -264,8 +272,9 @@ fn initializes_default_client_settings_and_game_view_url_when_config_missing() {
     assert_eq!(controller.game_view_url(), "https://blockidle.io/play");
 
     let settings = controller.settings();
-    assert_eq!(settings.foreground_fps_cap, ForegroundFpsCap::Unlimited);
-    assert_eq!(settings.background_fps_cap, BackgroundFpsCap::Fps15);
+    assert_eq!(settings.foreground_fps_cap, ForegroundFpsCap::Fps60);
+    assert_eq!(settings.background_fps_cap, BackgroundFpsCap::Fps0);
+    assert!(!settings.performance_mode);
     assert!(settings.keep_awake);
     assert!(settings.close_to_tray);
     assert!(!settings.audio_muted);
@@ -291,10 +300,11 @@ fn persists_client_settings_to_disk_and_restores_on_reload() {
     let mut controller = ClientController::load_or_default(dir.path());
 
     let updated = ClientSettings {
-        foreground_fps_cap: ForegroundFpsCap::Fps144,
-        background_fps_cap: BackgroundFpsCap::Fps5,
+        foreground_fps_cap: ForegroundFpsCap::Fps30,
+        background_fps_cap: BackgroundFpsCap::Fps0,
         fps_hud_visible: true,
-        keep_awake: false,
+        performance_mode: true,
+        keep_awake: true,
         close_to_tray: true,
         audio_muted: true,
         fullscreen: true,
@@ -527,18 +537,18 @@ fn tray_actions_hide_and_restore_window_switching_between_background_and_foregro
     let mut controller = ClientController::load_or_default(dir.path());
 
     let mut settings = controller.settings().clone();
-    settings.foreground_fps_cap = ForegroundFpsCap::Fps144;
-    settings.background_fps_cap = BackgroundFpsCap::Fps5;
+    settings.foreground_fps_cap = ForegroundFpsCap::Fps60;
+    settings.background_fps_cap = BackgroundFpsCap::Fps0;
     controller
         .update_settings(settings)
         .expect("update settings");
 
     assert!(controller.is_window_visible());
-    assert_eq!(controller.effective_fps_cap(), Some(144));
+    assert_eq!(controller.effective_fps_cap(), Some(60));
 
     let hide_effects = controller.handle_tray_action(TrayAction::Hide);
     assert!(!controller.is_window_visible());
-    assert_eq!(controller.effective_fps_cap(), Some(5));
+    assert_eq!(controller.effective_fps_cap(), Some(0));
     assert!(hide_effects.contains(&PlatformEffect::SetWindowVisible(false)));
     assert!(
         hide_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
@@ -550,12 +560,12 @@ fn tray_actions_hide_and_restore_window_switching_between_background_and_foregro
     assert!(
         hide_effects
             .iter()
-            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"effective_fps_cap\":5")))
+            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"effective_fps_cap\":0")))
     );
 
     let show_effects = controller.handle_tray_action(TrayAction::Show);
     assert!(controller.is_window_visible());
-    assert_eq!(controller.effective_fps_cap(), Some(144));
+    assert_eq!(controller.effective_fps_cap(), Some(60));
     assert!(show_effects.contains(&PlatformEffect::SetWindowVisible(true)));
     assert!(
         show_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
@@ -567,32 +577,32 @@ fn tray_actions_hide_and_restore_window_switching_between_background_and_foregro
     assert!(
         show_effects
             .iter()
-            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"effective_fps_cap\":144")))
+            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"effective_fps_cap\":60")))
     );
 
     // Minimizing prior to hiding to tray and then restoring from tray clears minimized state and restores Foreground FPS Cap
     controller.handle_minimized_changed(true);
-    assert_eq!(controller.effective_fps_cap(), Some(5));
+    assert_eq!(controller.effective_fps_cap(), Some(0));
     controller.handle_tray_action(TrayAction::Hide);
-    assert_eq!(controller.effective_fps_cap(), Some(5));
+    assert_eq!(controller.effective_fps_cap(), Some(0));
     let restore_after_min_effects = controller.handle_tray_action(TrayAction::Show);
     assert!(controller.is_window_visible());
     assert!(!controller.webview_state().window_minimized);
-    assert_eq!(controller.effective_fps_cap(), Some(144));
+    assert_eq!(controller.effective_fps_cap(), Some(60));
     assert!(
         restore_after_min_effects
             .iter()
-            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"effective_fps_cap\":144") && script.contains("\"window_minimized\":false")))
+            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"effective_fps_cap\":60") && script.contains("\"window_minimized\":false")))
     );
 
     let toggle_hide_effects = controller.handle_tray_action(TrayAction::ToggleWindowVisibility);
     assert!(!controller.is_window_visible());
-    assert_eq!(controller.effective_fps_cap(), Some(5));
+    assert_eq!(controller.effective_fps_cap(), Some(0));
     assert!(toggle_hide_effects.contains(&PlatformEffect::SetWindowVisible(false)));
 
     let toggle_show_effects = controller.handle_tray_action(TrayAction::ToggleWindowVisibility);
     assert!(controller.is_window_visible());
-    assert_eq!(controller.effective_fps_cap(), Some(144));
+    assert_eq!(controller.effective_fps_cap(), Some(60));
     assert!(toggle_show_effects.contains(&PlatformEffect::SetWindowVisible(true)));
 
     let quit_effects = controller.handle_tray_action(TrayAction::Quit);
@@ -658,14 +668,14 @@ fn switches_effective_fps_cap_between_foreground_and_background_on_focus_and_min
     let dir = tempdir().expect("tempdir");
     let mut controller = ClientController::load_or_default(dir.path());
 
-    // Default: Unlimited in foreground, Fps15 in background
-    assert_eq!(controller.effective_fps_cap(), None);
-    assert_eq!(controller.webview_state().effective_fps_cap, None);
+    // Default: 60 FPS in foreground, 0 FPS in background
+    assert_eq!(controller.effective_fps_cap(), Some(60));
+    assert_eq!(controller.webview_state().effective_fps_cap, Some(60));
 
-    // Unfocus switches to background cap (15 FPS) and emits SyncWebViewState
+    // Unfocus switches to background cap (0 FPS) and emits SyncWebViewState
     let unfocus_effects = controller.handle_focus_changed(false);
-    assert_eq!(controller.effective_fps_cap(), Some(15));
-    assert_eq!(controller.webview_state().effective_fps_cap, Some(15));
+    assert_eq!(controller.effective_fps_cap(), Some(0));
+    assert_eq!(controller.webview_state().effective_fps_cap, Some(0));
     assert_eq!(
         unfocus_effects,
         vec![PlatformEffect::SyncWebViewState(
@@ -673,9 +683,9 @@ fn switches_effective_fps_cap_between_foreground_and_background_on_focus_and_min
         )]
     );
 
-    // Focus restores foreground cap (Unlimited -> None)
+    // Focus restores foreground cap (60 FPS)
     let focus_effects = controller.handle_focus_changed(true);
-    assert_eq!(controller.effective_fps_cap(), None);
+    assert_eq!(controller.effective_fps_cap(), Some(60));
     assert_eq!(
         focus_effects,
         vec![PlatformEffect::SyncWebViewState(
@@ -683,62 +693,49 @@ fn switches_effective_fps_cap_between_foreground_and_background_on_focus_and_min
         )]
     );
 
-    // Test all foreground presets when focused & all background presets when minimized
+    // Test foreground presets when focused & background always capped at 0 FPS when minimized
     for (fg_preset, expected_fg) in [
         (ForegroundFpsCap::Fps15, Some(15)),
         (ForegroundFpsCap::Fps30, Some(30)),
         (ForegroundFpsCap::Fps60, Some(60)),
-        (ForegroundFpsCap::Fps120, Some(120)),
-        (ForegroundFpsCap::Fps144, Some(144)),
-        (ForegroundFpsCap::Fps240, Some(240)),
-        (ForegroundFpsCap::Unlimited, None),
     ] {
-        for (bg_preset, expected_bg) in [
-            (BackgroundFpsCap::Fps0, Some(0)),
-            (BackgroundFpsCap::Fps5, Some(5)),
-            (BackgroundFpsCap::Fps15, Some(15)),
-            (BackgroundFpsCap::Fps30, Some(30)),
-            (BackgroundFpsCap::Fps60, Some(60)),
-        ] {
-            let mut settings = controller.settings().clone();
-            settings.foreground_fps_cap = fg_preset;
-            settings.background_fps_cap = bg_preset;
-            controller
-                .update_settings(settings)
-                .expect("update settings");
+        let mut settings = controller.settings().clone();
+        settings.foreground_fps_cap = fg_preset;
+        controller
+            .update_settings(settings)
+            .expect("update settings");
 
-            // While focused and not minimized -> foreground cap
-            controller.handle_minimized_changed(false);
-            controller.handle_focus_changed(true);
-            assert_eq!(controller.effective_fps_cap(), expected_fg);
-            assert_eq!(controller.webview_state().effective_fps_cap, expected_fg);
+        // While focused and not minimized -> foreground cap
+        controller.handle_minimized_changed(false);
+        controller.handle_focus_changed(true);
+        assert_eq!(controller.effective_fps_cap(), expected_fg);
+        assert_eq!(controller.webview_state().effective_fps_cap, expected_fg);
 
-            // Minimized while focused -> background cap
-            let min_effects = controller.handle_minimized_changed(true);
-            assert_eq!(controller.effective_fps_cap(), expected_bg);
-            assert_eq!(controller.webview_state().effective_fps_cap, expected_bg);
-            assert_eq!(
-                min_effects,
-                vec![PlatformEffect::SyncWebViewState(
-                    controller.webview_state_sync_script()
-                )]
-            );
+        // Minimized while focused -> background cap (always 0 FPS)
+        let min_effects = controller.handle_minimized_changed(true);
+        assert_eq!(controller.effective_fps_cap(), Some(0));
+        assert_eq!(controller.webview_state().effective_fps_cap, Some(0));
+        assert_eq!(
+            min_effects,
+            vec![PlatformEffect::SyncWebViewState(
+                controller.webview_state_sync_script()
+            )]
+        );
 
-            // Restore from minimize while focused -> foreground cap
-            let restore_effects = controller.handle_minimized_changed(false);
-            assert_eq!(controller.effective_fps_cap(), expected_fg);
-            assert_eq!(
-                restore_effects,
-                vec![PlatformEffect::SyncWebViewState(
-                    controller.webview_state_sync_script()
-                )]
-            );
-        }
+        // Restore from minimize while focused -> foreground cap
+        let restore_effects = controller.handle_minimized_changed(false);
+        assert_eq!(controller.effective_fps_cap(), expected_fg);
+        assert_eq!(
+            restore_effects,
+            vec![PlatformEffect::SyncWebViewState(
+                controller.webview_state_sync_script()
+            )]
+        );
     }
 
     // Zero-dimension resize (common when minimizing on Windows/Linux) also activates minimized state without overwriting saved dimensions
     let mut settings = controller.settings().clone();
-    settings.foreground_fps_cap = ForegroundFpsCap::Fps120;
+    settings.foreground_fps_cap = ForegroundFpsCap::Fps60;
     settings.background_fps_cap = BackgroundFpsCap::Fps0;
     controller
         .update_settings(settings)
@@ -754,7 +751,7 @@ fn switches_effective_fps_cap_between_foreground_and_background_on_focus_and_min
     );
 
     let restore_resize_effects = controller.handle_window_resized(1600, 900);
-    assert_eq!(controller.effective_fps_cap(), Some(120));
+    assert_eq!(controller.effective_fps_cap(), Some(60));
     assert_eq!(controller.settings().window_width, 1600);
     assert_eq!(
         restore_resize_effects,
@@ -967,6 +964,98 @@ console.log('MEMORY_PRUNE_TEST_OK');
 }
 
 #[test]
+fn initialization_script_applies_performance_mode_optimizations_to_threejs_and_particles() {
+    let dir = tempdir().expect("tempdir");
+    let mut controller = ClientController::load_or_default(dir.path());
+    assert!(!controller.settings().performance_mode);
+
+    let init_script = controller.initialization_script();
+    let mut fast_settings = controller.settings().clone();
+    fast_settings.performance_mode = true;
+    controller
+        .update_settings(fast_settings)
+        .expect("update settings");
+    let fast_sync_script = controller.webview_state_sync_script();
+
+    let mut normal_settings = controller.settings().clone();
+    normal_settings.performance_mode = false;
+    controller
+        .update_settings(normal_settings)
+        .expect("update settings");
+    let normal_sync_script = controller.webview_state_sync_script();
+
+    let test_body = format!(
+        r#"
+window.devicePixelRatio = 2;
+let pixelRatio = 1.5;
+let shadowAutoUpdate = true;
+let shadowNeedsUpdate = true;
+window.__renderizador = {{
+    shadowMap: {{
+        get autoUpdate() {{ return shadowAutoUpdate; }},
+        set autoUpdate(v) {{ shadowAutoUpdate = v; }},
+        get needsUpdate() {{ return shadowNeedsUpdate; }},
+        set needsUpdate(v) {{ shadowNeedsUpdate = v; }}
+    }},
+    getPixelRatio() {{ return pixelRatio; }},
+    setPixelRatio(r) {{ pixelRatio = r; }},
+    setSize() {{}}
+}};
+
+let particleCalls = 0;
+window.__demo = {{
+    particulas: {{
+        criar() {{
+            particleCalls++;
+        }}
+    }}
+}};
+
+// Apply fast mode
+{fast_sync_script}
+
+if (shadowAutoUpdate !== false) {{
+    throw new Error('Expected shadowMap.autoUpdate === false in fast mode');
+}}
+if (shadowNeedsUpdate !== false) {{
+    throw new Error('Expected shadowMap.needsUpdate === false in fast mode');
+}}
+if (pixelRatio !== 1) {{
+    throw new Error('Expected pixelRatio === 1 in fast mode, got: ' + pixelRatio);
+}}
+if (localStorage.getItem('bi-graficos') !== 'leve') {{
+    throw new Error('Expected bi-graficos === "leve" in localStorage in fast mode');
+}}
+
+// Verify particles hook is active and can throttle
+for (let i = 0; i < 100; i++) {{
+    window.__demo.particulas.criar();
+}}
+if (particleCalls >= 100 || particleCalls === 0) {{
+    throw new Error('Expected particles to be throttled in fast mode, got ' + particleCalls + ' calls out of 100');
+}}
+
+// Apply normal mode
+{normal_sync_script}
+
+if (shadowAutoUpdate !== true) {{
+    throw new Error('Expected shadowMap.autoUpdate === true in normal mode');
+}}
+if (pixelRatio !== 1.5) {{
+    throw new Error('Expected pixelRatio === 1.5 in normal mode, got: ' + pixelRatio);
+}}
+if (localStorage.getItem('bi-graficos') !== 'normal') {{
+    throw new Error('Expected bi-graficos === "normal" in localStorage in normal mode');
+}}
+
+console.log('PERFORMANCE_MODE_OK');
+"#
+    );
+
+    run_node_with_dom("performance_mode", &init_script, &test_body);
+}
+
+#[test]
 fn toggles_audio_mute_from_tray_and_ipc_persists_state_syncs_tray_menu_and_injects_audio_interceptor()
  {
     let dir = tempdir().expect("tempdir");
@@ -1103,10 +1192,10 @@ fn initialization_script_renders_shadow_dom_fps_hud_with_pointer_events_none_and
         "initialization_script still contains unreplaced __BLOCKIDLE_APP_VERSION__"
     );
 
-    // Enable FPS HUD and set Foreground FPS Cap to 144
+    // Enable FPS HUD and set Foreground FPS Cap to 30
     let mut hud_on = controller.settings().clone();
     hud_on.fps_hud_visible = true;
-    hud_on.foreground_fps_cap = ForegroundFpsCap::Fps144;
+    hud_on.foreground_fps_cap = ForegroundFpsCap::Fps30;
     hud_on.background_fps_cap = BackgroundFpsCap::Fps0;
     controller.update_settings(hud_on).expect("update settings");
     let show_hud_script = controller.webview_state_sync_script();
@@ -1121,14 +1210,14 @@ fn initialization_script_renders_shadow_dom_fps_hud_with_pointer_events_none_and
         })
         .expect("unfocus sync script");
 
-    // Focus with Unlimited cap
+    // Focus with 60 FPS cap
     let _ = controller.handle_focus_changed(true);
-    let mut unlimited_settings = controller.settings().clone();
-    unlimited_settings.foreground_fps_cap = ForegroundFpsCap::Unlimited;
+    let mut fps60_settings = controller.settings().clone();
+    fps60_settings.foreground_fps_cap = ForegroundFpsCap::Fps60;
     controller
-        .update_settings(unlimited_settings)
+        .update_settings(fps60_settings)
         .expect("update settings");
-    let unlimited_script = controller.webview_state_sync_script();
+    let fps60_script = controller.webview_state_sync_script();
 
     assert!(init_script.contains("attachShadow"));
     assert!(init_script.contains("pointer-events: none"));
@@ -1150,13 +1239,13 @@ if (hud.style.display !== 'none') {{
     throw new Error('Expected FPS HUD to be hidden initially when fps_hud_visible is false, got display=' + hud.style.display);
 }}
 
-// Enable FPS HUD with 144 FPS cap
+// Enable FPS HUD with 30 FPS cap
 {show_hud_script}
 if (hud.style.display === 'none') {{
     throw new Error('Expected FPS HUD to be visible when fps_hud_visible is true');
 }}
-if (!hud.textContent.includes('144')) {{
-    throw new Error('Expected FPS HUD text to display active cap 144, got: ' + hud.textContent);
+if (!hud.textContent.includes('30')) {{
+    throw new Error('Expected FPS HUD text to display active cap 30, got: ' + hud.textContent);
 }}
 
 // Unfocus -> 0 FPS cap (Paused)
@@ -1165,14 +1254,14 @@ if (!hud.textContent.includes('0') && !hud.textContent.toLowerCase().includes('p
     throw new Error('Expected FPS HUD text to reflect 0 FPS background cap, got: ' + hud.textContent);
 }}
 
-// Focus with Unlimited cap and deliver 30 frames within 1s window
-{unlimited_script}
+// Focus with 60 FPS cap and deliver frames within 1s window
+{fps60_script}
 for (let i = 0; i < 30; i++) {{
     window.requestAnimationFrame(() => {{}});
     stepNativeFrame(10);
 }}
-if (!hud.textContent.includes('30') || !hud.textContent.includes('Unlimited')) {{
-    throw new Error('Expected FPS HUD to show 30 FPS and Unlimited cap, got: ' + hud.textContent);
+if (!hud.textContent.includes('Cap: 60 FPS')) {{
+    throw new Error('Expected FPS HUD to show 60 FPS cap, got: ' + hud.textContent);
 }}
 console.log('HUD_TEST_OK');
 "#
@@ -1471,30 +1560,33 @@ if (gameKeyEvents.length !== 0) {
     throw new Error('Expected game keys to be consumed while Settings Overlay is open, got: ' + JSON.stringify(gameKeyEvents));
 }
 
-// Controls for Foreground FPS Cap, Background FPS Cap, and all 4 toggles exist and emit update_settings IPC
+// Controls for Foreground FPS Cap, and all 5 toggles exist and emit update_settings IPC
 const fgSelect = shadow.getElementById('blockidle-fg-fps-select');
-const bgSelect = shadow.getElementById('blockidle-bg-fps-select');
+const perfToggle = shadow.getElementById('blockidle-toggle-performance-mode');
 const hudToggle = shadow.getElementById('blockidle-toggle-fps-hud');
 const closeToTrayToggle = shadow.getElementById('blockidle-toggle-close-to-tray');
 const muteToggle = shadow.getElementById('blockidle-toggle-audio-mute');
 const fullscreenToggle = shadow.getElementById('blockidle-toggle-fullscreen');
 
-if (!fgSelect || !bgSelect || !hudToggle || !closeToTrayToggle || !muteToggle || !fullscreenToggle) {
+if (!fgSelect || !perfToggle || !hudToggle || !closeToTrayToggle || !muteToggle || !fullscreenToggle) {
     throw new Error('Missing one or more required controls in Settings Overlay');
+}
+if (shadow.getElementById('blockidle-bg-fps-select')) {
+    throw new Error('Expected #blockidle-bg-fps-select to be removed from Settings Overlay');
 }
 if (shadow.getElementById('blockidle-toggle-keep-awake')) {
     throw new Error('Expected #blockidle-toggle-keep-awake to be removed from Settings Overlay');
 }
 
-if (!fgSelect.title || !fgSelect.title.includes('foco')) throw new Error('Expected fgSelect title tooltip, got: ' + fgSelect.title);
-if (!bgSelect.title || !bgSelect.title.includes('segundo plano')) throw new Error('Expected bgSelect title tooltip, got: ' + bgSelect.title);
+if (!fgSelect.title || !fgSelect.title.includes('aberta') || !fgSelect.title.includes('60')) throw new Error('Expected fgSelect title tooltip, got: ' + fgSelect.title);
+if (!perfToggle.title || !perfToggle.title.includes('sombras')) throw new Error('Expected perfToggle title tooltip, got: ' + perfToggle.title);
 if (!hudToggle.title || !hudToggle.title.includes('contador de quadros')) throw new Error('Expected hudToggle title tooltip, got: ' + hudToggle.title);
 if (!closeToTrayToggle.title || !closeToTrayToggle.title.includes('bandeja')) throw new Error('Expected closeToTrayToggle title tooltip, got: ' + closeToTrayToggle.title);
 if (!muteToggle.title || !muteToggle.title.includes('áudio')) throw new Error('Expected muteToggle title tooltip, got: ' + muteToggle.title);
 if (!fullscreenToggle.title || !fullscreenToggle.title.includes('tela cheia')) throw new Error('Expected fullscreenToggle title tooltip, got: ' + fullscreenToggle.title);
 
-fgSelect.change('Fps144');
-bgSelect.change('Fps0');
+fgSelect.change('Fps30');
+perfToggle.change(undefined, true);
 hudToggle.change(undefined, true);
 closeToTrayToggle.change(undefined, true);
 muteToggle.change(undefined, true);
@@ -1502,8 +1594,8 @@ fullscreenToggle.change(undefined, true);
 
 const lastSettingsMsg = [...ipcMessages].reverse().find(m => m.type === 'update_settings');
 if (!lastSettingsMsg ||
-    lastSettingsMsg.settings.foreground_fps_cap !== 'Fps144' ||
-    lastSettingsMsg.settings.background_fps_cap !== 'Fps0' ||
+    lastSettingsMsg.settings.foreground_fps_cap !== 'Fps30' ||
+    lastSettingsMsg.settings.performance_mode !== true ||
     lastSettingsMsg.settings.fps_hud_visible !== true ||
     lastSettingsMsg.settings.close_to_tray !== true ||
     lastSettingsMsg.settings.audio_muted !== true ||
@@ -1622,12 +1714,13 @@ console.log(JSON.stringify(ipcMessages));
     assert!(!controller.is_settings_overlay_open());
     assert_eq!(
         controller.settings().foreground_fps_cap,
-        ForegroundFpsCap::Fps144
+        ForegroundFpsCap::Fps30
     );
     assert_eq!(
         controller.settings().background_fps_cap,
         BackgroundFpsCap::Fps0
     );
+    assert!(controller.settings().performance_mode);
     assert!(controller.settings().fps_hud_visible);
     assert!(controller.settings().keep_awake);
     assert!(controller.settings().close_to_tray);

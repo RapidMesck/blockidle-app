@@ -94,7 +94,6 @@
     let hudElement = null;
     let settingsOverlayElement = null;
     let fgSelectElement = null;
-    let bgSelectElement = null;
     let toggleElements = {};
     let keybindButtons = {};
     let keybindStatusElement = null;
@@ -197,10 +196,10 @@
             return;
         }
         if (fgSelectElement) {
-            fgSelectElement.value = st.settings.foreground_fps_cap || 'Unlimited';
+            fgSelectElement.value = st.settings.foreground_fps_cap || 'Fps60';
         }
-        if (bgSelectElement) {
-            bgSelectElement.value = st.settings.background_fps_cap || 'Fps15';
+        if (toggleElements.performance_mode) {
+            toggleElements.performance_mode.checked = Boolean(st.settings.performance_mode);
         }
         if (toggleElements.fps_hud_visible) {
             toggleElements.fps_hud_visible.checked = Boolean(st.settings.fps_hud_visible);
@@ -534,27 +533,9 @@
                 [
                     ['Fps15', '15 FPS'],
                     ['Fps30', '30 FPS'],
-                    ['Fps60', '60 FPS'],
-                    ['Fps120', '120 FPS'],
-                    ['Fps144', '144 FPS'],
-                    ['Fps240', '240 FPS'],
-                    ['Unlimited', 'Unlimited']
-                ],
-                'Limite de taxa de quadros quando a janela estiver em foco'
-            );
-
-            bgSelectElement = createFpsSelectRow(
-                'blockidle-bg-fps-select',
-                'Background FPS Cap',
-                'background_fps_cap',
-                [
-                    ['Fps0', '0 FPS (Pausado)'],
-                    ['Fps5', '5 FPS'],
-                    ['Fps15', '15 FPS'],
-                    ['Fps30', '30 FPS'],
                     ['Fps60', '60 FPS']
                 ],
-                'Limite de FPS quando a janela estiver em segundo plano ou minimizada (economiza CPU e bateria)'
+                'Limite de taxa de quadros quando a janela estiver aberta (máximo 60 FPS)'
             );
 
             addSeparator();
@@ -562,6 +543,12 @@
 
             // Toggles
             const toggleDefs = [
+                {
+                    id: 'blockidle-toggle-performance-mode',
+                    field: 'performance_mode',
+                    label: 'Modo Desempenho (Fast)',
+                    tooltip: 'Desativa sombras dinâmicas, otimiza o pixel ratio e reduz partículas para máxima fluidez e economia de GPU'
+                },
                 {
                     id: 'blockidle-toggle-fps-hud',
                     field: 'fps_hud_visible',
@@ -1308,7 +1295,11 @@
             } else {
                 if (window.__renderizador && typeof window.__renderizador.setSize === 'function') {
                     window.__renderizador.setSize(window.innerWidth || 1280, window.innerHeight || 720, false);
+                } else if (cenaCanvas) {
+                    cenaCanvas.width = window.innerWidth || 1280;
+                    cenaCanvas.height = window.innerHeight || 720;
                 }
+                syncPerformanceMode();
                 if (typeof window.dispatchEvent === 'function' && typeof Event === 'function') {
                     window.dispatchEvent(new Event('resize'));
                 }
@@ -1316,10 +1307,75 @@
         } catch (_e) {}
     }
 
+    function isPerformanceModeEnabled() {
+        const st = window.__BLOCKIDLE_CLIENT_STATE__;
+        return Boolean(st && st.settings && st.settings.performance_mode);
+    }
+
+    function syncPerformanceMode() {
+        try {
+            var fast = isPerformanceModeEnabled();
+
+            // 1. Sync game's native bi-graficos preference in localStorage
+            try {
+                if (typeof localStorage !== 'undefined') {
+                    var currentPref = localStorage.getItem('bi-graficos');
+                    var targetPref = fast ? 'leve' : 'normal';
+                    if (currentPref !== targetPref) {
+                        localStorage.setItem('bi-graficos', targetPref);
+                    }
+                }
+            } catch (_) {}
+
+            // Sync the game's settings checkbox if mounted
+            var gl = document.getElementById ? document.getElementById('graf-leve') : null;
+            if (gl && gl.checked !== fast) {
+                gl.checked = fast;
+                if (typeof gl.onchange === 'function') {
+                    gl.onchange();
+                }
+            }
+
+            // 2. Control Three.js shadow maps and pixel ratio directly
+            if (window.__renderizador) {
+                if (window.__renderizador.shadowMap) {
+                    window.__renderizador.shadowMap.autoUpdate = !fast;
+                    if (fast) {
+                        window.__renderizador.shadowMap.needsUpdate = false;
+                    }
+                }
+                if (typeof window.__renderizador.setPixelRatio === 'function') {
+                    var targetRatio = fast ? 1 : Math.min((typeof window.devicePixelRatio === 'number' ? window.devicePixelRatio : 1), 1.5);
+                    var currentRatio = (typeof window.__renderizador.getPixelRatio === 'function')
+                        ? window.__renderizador.getPixelRatio()
+                        : null;
+                    if (currentRatio === null || currentRatio !== targetRatio) {
+                        window.__renderizador.setPixelRatio(targetRatio);
+                        if (typeof window.__renderizador.setSize === 'function' && getEffectiveCap() !== 0) {
+                            window.__renderizador.setSize(window.innerWidth || 1280, window.innerHeight || 720, false);
+                        }
+                    }
+                }
+            }
+
+            // 3. Throttle cosmetic particles in performance mode
+            if (window.__demo && window.__demo.particulas && typeof window.__demo.particulas.criar === 'function' && !window.__demo.particulas.__origCriar) {
+                window.__demo.particulas.__origCriar = window.__demo.particulas.criar;
+                window.__demo.particulas.criar = function(p, v, cor, tam, vida, opts) {
+                    if (isPerformanceModeEnabled() && Math.random() < 0.75) {
+                        return;
+                    }
+                    return window.__demo.particulas.__origCriar.apply(this, arguments);
+                };
+            }
+        } catch (_) {}
+    }
+
     window.__blockidleApplyState = function(nextState) {
         const prevCap = getEffectiveCap();
         window.__BLOCKIDLE_CLIENT_STATE__ = nextState;
         syncAudioMuteState();
+        syncPerformanceMode();
         const nextCap = getEffectiveCap();
         if (nextCap === 0) {
             clearScheduledPump();
@@ -1339,6 +1395,7 @@
     };
 
     syncAudioMuteState();
+    syncPerformanceMode();
     ensurePageCompatStyleMounted();
 
     window.__BLOCKIDLE_CLIENT__ = {
@@ -1349,7 +1406,10 @@
     };
 
     if (typeof window.setInterval === 'function') {
-        window.setInterval(updateFpsHud, 250);
+        window.setInterval(function() {
+            updateFpsHud();
+            syncPerformanceMode();
+        }, 250);
         window.setInterval(function() {
             if (getEffectiveCap() === 0) {
                 pruneIdleMemory();
@@ -1360,10 +1420,12 @@
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', function() {
             syncAudioMuteState();
+            syncPerformanceMode();
             ensureOverlayMounted();
             sendIpc({ type: 'client_ready' });
         }, { once: true });
     } else {
+        syncPerformanceMode();
         ensureOverlayMounted();
         sendIpc({ type: 'client_ready' });
     }

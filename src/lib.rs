@@ -407,15 +407,11 @@ pub enum ForegroundFpsCap {
 
 impl ForegroundFpsCap {
     pub fn as_fps(self) -> Option<u32> {
-        match self {
-            Self::Fps15 => Some(15),
-            Self::Fps30 => Some(30),
-            Self::Fps60 => Some(60),
-            Self::Fps120 => Some(120),
-            Self::Fps144 => Some(144),
-            Self::Fps240 => Some(240),
-            Self::Unlimited => None,
-        }
+        Some(match self {
+            Self::Fps15 => 15,
+            Self::Fps30 => 30,
+            Self::Fps60 | Self::Fps120 | Self::Fps144 | Self::Fps240 | Self::Unlimited => 60,
+        })
     }
 }
 
@@ -430,13 +426,7 @@ pub enum BackgroundFpsCap {
 
 impl BackgroundFpsCap {
     pub fn as_fps(self) -> Option<u32> {
-        Some(match self {
-            Self::Fps0 => 0,
-            Self::Fps5 => 5,
-            Self::Fps15 => 15,
-            Self::Fps30 => 30,
-            Self::Fps60 => 60,
-        })
+        Some(0)
     }
 }
 
@@ -644,6 +634,7 @@ pub struct ClientSettings {
     pub foreground_fps_cap: ForegroundFpsCap,
     pub background_fps_cap: BackgroundFpsCap,
     pub fps_hud_visible: bool,
+    pub performance_mode: bool,
     pub keep_awake: bool,
     pub close_to_tray: bool,
     pub audio_muted: bool,
@@ -656,9 +647,10 @@ pub struct ClientSettings {
 impl Default for ClientSettings {
     fn default() -> Self {
         Self {
-            foreground_fps_cap: ForegroundFpsCap::Unlimited,
-            background_fps_cap: BackgroundFpsCap::Fps15,
+            foreground_fps_cap: ForegroundFpsCap::Fps60,
+            background_fps_cap: BackgroundFpsCap::Fps0,
             fps_hud_visible: false,
+            performance_mode: false,
             keep_awake: true,
             close_to_tray: true,
             audio_muted: false,
@@ -714,6 +706,20 @@ impl ClientController {
                             should_persist = true;
                         }
                         parsed.keybindings = normalized_kb;
+                        if matches!(
+                            parsed.foreground_fps_cap,
+                            ForegroundFpsCap::Fps120
+                                | ForegroundFpsCap::Fps144
+                                | ForegroundFpsCap::Fps240
+                                | ForegroundFpsCap::Unlimited
+                        ) {
+                            parsed.foreground_fps_cap = ForegroundFpsCap::Fps60;
+                            should_persist = true;
+                        }
+                        if parsed.background_fps_cap != BackgroundFpsCap::Fps0 {
+                            parsed.background_fps_cap = BackgroundFpsCap::Fps0;
+                            should_persist = true;
+                        }
                         parsed
                     }
                     Err(_) => {
@@ -790,6 +796,17 @@ impl ClientController {
         } else {
             settings.keybindings = self.settings.keybindings.clone();
         }
+        if matches!(
+            settings.foreground_fps_cap,
+            ForegroundFpsCap::Fps120
+                | ForegroundFpsCap::Fps144
+                | ForegroundFpsCap::Fps240
+                | ForegroundFpsCap::Unlimited
+        ) {
+            settings.foreground_fps_cap = ForegroundFpsCap::Fps60;
+        }
+        settings.background_fps_cap = BackgroundFpsCap::Fps0;
+        settings.keep_awake = true;
         self.settings = settings;
         self.save_settings()
     }

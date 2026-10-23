@@ -235,10 +235,19 @@ fn build_game_view(
 mod linux_runtime {
     use blockidle_app::ClientController;
     use std::ffi::{c_char, c_void};
+    use std::sync::Once;
 
     const G_LOG_FLAG_RECURSION: u32 = 1 << 0;
     const G_LOG_FLAG_FATAL: u32 = 1 << 1;
     const G_LOG_LEVEL_WARNING: u32 = 1 << 4;
+    const GTK_STYLE_PROVIDER_PRIORITY_USER: u32 = 800;
+
+    #[repr(C)]
+    struct GList {
+        data: *mut c_void,
+        next: *mut GList,
+        prev: *mut GList,
+    }
 
     unsafe extern "C" {
         fn g_log_set_handler(
@@ -251,6 +260,27 @@ mod linux_runtime {
         ) -> u32;
         fn gtk_settings_get_default() -> *mut c_void;
         fn g_object_set(object: *mut c_void, first_property_name: *const c_char, ...);
+        fn gdk_screen_get_default() -> *mut c_void;
+        fn gtk_css_provider_new() -> *mut c_void;
+        fn gtk_css_provider_load_from_data(
+            provider: *mut c_void,
+            data: *const c_char,
+            length: isize,
+            error: *mut *mut c_void,
+        ) -> i32;
+        fn gtk_style_context_add_provider_for_screen(
+            screen: *mut c_void,
+            provider: *mut c_void,
+            priority: u32,
+        );
+        fn gtk_window_list_toplevels() -> *mut GList;
+        fn g_list_free(list: *mut GList);
+        fn gtk_window_get_titlebar(window: *mut c_void) -> *mut c_void;
+        fn gtk_bin_get_child(bin: *mut c_void) -> *mut c_void;
+        fn gtk_header_bar_set_has_subtitle(bar: *mut c_void, setting: i32);
+        fn gtk_widget_get_style_context(widget: *mut c_void) -> *mut c_void;
+        fn gtk_style_context_add_class(context: *mut c_void, class_name: *const c_char);
+        fn gtk_widget_queue_resize(widget: *mut c_void);
     }
 
     unsafe extern "C" fn ignore_ayatana_warning(
@@ -262,13 +292,8 @@ mod linux_runtime {
     }
 
     pub fn configure_pre_init(controller: &ClientController) {
-        // Force standard light GTK3 theme for WebKitGTK widget painting so dark desktop themes
-        // (such as Breeze Dark + colorreload-gtk-module) do not force dark backgrounds or white text
-        // onto web form controls (<select>, <option>, <input>).
         // SAFETY: Called on the main thread before GTK/WebKit or any worker threads are spawned.
         unsafe {
-            std::env::set_var("GTK_THEME", "Adwaita:light");
-            std::env::set_var("GTK_MODULES", "");
             if std::env::var_os("FONTCONFIG_FILE").is_none()
                 && let Ok(fonts_conf) = controller.ensure_fontconfig_file()
             {
@@ -284,15 +309,12 @@ mod linux_runtime {
     }
 
     pub fn apply_gtk_settings() {
+        static CSS_INIT: Once = Once::new();
         unsafe {
             let settings = gtk_settings_get_default();
             if !settings.is_null() {
                 g_object_set(
                     settings,
-                    c"gtk-application-prefer-dark-theme".as_ptr(),
-                    0i32,
-                    c"gtk-theme-name".as_ptr(),
-                    c"Adwaita".as_ptr(),
                     c"gtk-xft-hinting".as_ptr(),
                     1i32,
                     c"gtk-xft-hintstyle".as_ptr(),
@@ -303,6 +325,83 @@ mod linux_runtime {
                     c"none".as_ptr(),
                     std::ptr::null::<c_char>(),
                 );
+            }
+
+            CSS_INIT.call_once(|| {
+                let screen = gdk_screen_get_default();
+                if !screen.is_null() {
+                    let provider = gtk_css_provider_new();
+                    if !provider.is_null() {
+                        let css = c"
+                            headerbar, .titlebar, window headerbar, window .titlebar,
+                            window headerbar.titlebar, dialog headerbar.titlebar,
+                            headerbar.default-decoration, .titlebar.default-decoration {
+                                min-height: 0px;
+                                padding-top: 1px;
+                                padding-bottom: 1px;
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                margin: 0px;
+                            }
+                            headerbar *, .titlebar * {
+                                margin-top: 0px;
+                                margin-bottom: 0px;
+                                min-height: 0px;
+                            }
+                            headerbar entry, headerbar spinbutton, headerbar separator,
+                            headerbar button, headerbar button.titlebutton, .titlebar button.titlebutton,
+                            window headerbar.default-decoration button.titlebutton,
+                            window .titlebar.default-decoration button.titlebutton {
+                                min-height: 18px;
+                                min-width: 18px;
+                                padding: 2px;
+                                margin-top: 0px;
+                                margin-bottom: 0px;
+                            }
+                        ";
+                        gtk_css_provider_load_from_data(
+                            provider,
+                            css.as_ptr(),
+                            -1,
+                            std::ptr::null_mut(),
+                        );
+                        gtk_style_context_add_provider_for_screen(
+                            screen,
+                            provider,
+                            GTK_STYLE_PROVIDER_PRIORITY_USER,
+                        );
+                    }
+                }
+            });
+
+            let list = gtk_window_list_toplevels();
+            let mut node = list;
+            while !node.is_null() {
+                let win = (*node).data;
+                if !win.is_null() {
+                    let tb = gtk_window_get_titlebar(win);
+                    if !tb.is_null() {
+                        let tb_sc = gtk_widget_get_style_context(tb);
+                        if !tb_sc.is_null() {
+                            gtk_style_context_add_class(tb_sc, c"default-decoration".as_ptr());
+                            gtk_style_context_add_class(tb_sc, c"titlebar".as_ptr());
+                        }
+                        let child = gtk_bin_get_child(tb);
+                        if !child.is_null() {
+                            gtk_header_bar_set_has_subtitle(child, 0);
+                            let hb_sc = gtk_widget_get_style_context(child);
+                            if !hb_sc.is_null() {
+                                gtk_style_context_add_class(hb_sc, c"default-decoration".as_ptr());
+                                gtk_style_context_add_class(hb_sc, c"titlebar".as_ptr());
+                            }
+                        }
+                        gtk_widget_queue_resize(win);
+                    }
+                }
+                node = (*node).next;
+            }
+            if !list.is_null() {
+                g_list_free(list);
             }
         }
     }

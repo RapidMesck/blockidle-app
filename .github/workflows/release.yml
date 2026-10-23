@@ -1,0 +1,252 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional version tag override (e.g. v0.1.0). Defaults to version in Cargo.toml."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-version:
+    name: Check Cargo.toml Version
+    runs-on: ubuntu-24.04
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect version change and create tag if needed
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          CARGO_VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ -z "$CARGO_VERSION" ]; then
+            echo "Error: Could not read version from Cargo.toml"
+            exit 1
+          fi
+
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="${INPUT_TAG}"
+            VERSION="${TAG#v}"
+          else
+            VERSION="${CARGO_VERSION}"
+            TAG="v${VERSION}"
+          fi
+
+          echo "Detected version: ${VERSION} (tag: ${TAG})"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists. Skipping release build."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git rev-parse "${TAG}" >/dev/null 2>&1; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "${TAG}" -m "Release ${TAG}"
+            git push origin "${TAG}"
+          fi
+
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+
+  build-linux:
+    name: Build Linux x86_64 (.tar.gz & .deb)
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            libxdo-dev \
+            pkg-config \
+            build-essential
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package Linux tar.gz and .deb
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+          TAG: ${{ needs.check-version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          strip target/release/blockidle-app
+
+          # 1. Portable .tar.gz archive
+          STAGE_DIR="blockidle-app-${TAG}-linux-x86_64"
+          mkdir -p "${STAGE_DIR}"
+          cp target/release/blockidle-app "${STAGE_DIR}/blockidle-app"
+          chmod 755 "${STAGE_DIR}/blockidle-app"
+          tar -czf "dist/${STAGE_DIR}.tar.gz" "${STAGE_DIR}"
+
+          # 2. Debian/Ubuntu .deb package
+          DEB_DIR="deb-pkg/blockidle-app_${VERSION}_amd64"
+          mkdir -p "${DEB_DIR}/DEBIAN"
+          mkdir -p "${DEB_DIR}/usr/bin"
+          mkdir -p "${DEB_DIR}/usr/share/applications"
+
+          cp target/release/blockidle-app "${DEB_DIR}/usr/bin/blockidle-app"
+          chmod 755 "${DEB_DIR}/usr/bin/blockidle-app"
+
+          cat > "${DEB_DIR}/usr/share/applications/blockidle.desktop" << 'EOF'
+          [Desktop Entry]
+          Name=Blockidle
+          Comment=Native desktop client for Blockidle (https://blockidle.io/play)
+          Exec=/usr/bin/blockidle-app
+          Terminal=false
+          Type=Application
+          Categories=Game;
+          StartupWMClass=blockidle-app
+          EOF
+
+          cat > "${DEB_DIR}/DEBIAN/control" << EOF
+          Package: blockidle-app
+          Version: ${VERSION}
+          Section: games
+          Priority: optional
+          Architecture: amd64
+          Depends: libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1
+          Maintainer: Blockidle Contributors
+          Description: Native desktop client shell for Blockidle (https://blockidle.io/play)
+          EOF
+
+          dpkg-deb --build --root-owner-group "${DEB_DIR}" "dist/blockidle-app_${VERSION}_amd64.deb"
+
+          cd dist
+          sha256sum * > SHA256SUMS-linux-x86_64.txt
+
+      - name: Upload Linux release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-x86_64
+          path: dist/*
+
+  build-windows:
+    name: Build Windows x86_64 (.zip & .exe)
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package Windows artifacts
+        shell: bash
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+          TAG: ${{ needs.check-version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          cp target/release/blockidle-app.exe "dist/blockidle-app-${TAG}-windows-x86_64.exe"
+
+          STAGE_DIR="blockidle-app-${TAG}-windows-x86_64"
+          mkdir -p "${STAGE_DIR}"
+          cp target/release/blockidle-app.exe "${STAGE_DIR}/blockidle-app.exe"
+          7z a -tzip "dist/${STAGE_DIR}.zip" "${STAGE_DIR}"
+
+          cd dist
+          sha256sum * > SHA256SUMS-windows-x86_64.txt
+
+      - name: Upload Windows release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x86_64
+          path: dist/*
+
+  publish-release:
+    name: Publish GitHub Release
+    needs:
+      - check-version
+      - build-linux
+      - build-windows
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Consolidate SHA256SUMS.txt
+        run: |
+          cd artifacts
+          cat SHA256SUMS-linux-x86_64.txt SHA256SUMS-windows-x86_64.txt > SHA256SUMS.txt
+          rm -f SHA256SUMS-linux-x86_64.txt SHA256SUMS-windows-x86_64.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check-version.outputs.tag }}
+          name: "Blockidle Desktop ${{ needs.check-version.outputs.tag }}"
+          generate_release_notes: true
+          files: artifacts/*

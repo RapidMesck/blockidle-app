@@ -186,12 +186,11 @@ fn normalize_key_token(token: &str) -> Option<String> {
         _ => {}
     }
 
-    if let Some(rest) = lower.strip_prefix('f') {
-        if let Ok(num) = rest.parse::<u8>() {
-            if (1..=24).contains(&num) {
-                return Some(format!("F{num}"));
-            }
-        }
+    if let Some(rest) = lower.strip_prefix('f')
+        && let Ok(num) = rest.parse::<u8>()
+        && (1..=24).contains(&num)
+    {
+        return Some(format!("F{num}"));
     }
 
     if trimmed.len() == 1 {
@@ -489,13 +488,13 @@ impl ClientController {
             return Err(KeybindingError::InvalidShortcut(shortcut.to_string()));
         };
 
-        if let Some(existing_action) = self.settings.keybindings.action_for_shortcut(&normalized) {
-            if existing_action != action {
-                return Err(KeybindingError::DuplicateShortcut {
-                    shortcut: normalized,
-                    existing_action,
-                });
-            }
+        if let Some(existing_action) = self.settings.keybindings.action_for_shortcut(&normalized)
+            && existing_action != action
+        {
+            return Err(KeybindingError::DuplicateShortcut {
+                shortcut: normalized,
+                existing_action,
+            });
         }
 
         self.settings.keybindings.set(action, normalized);

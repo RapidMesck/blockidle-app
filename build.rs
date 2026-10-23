@@ -4,7 +4,8 @@ fn main() {
     res.set_icon("assets/icons/favicon.ico");
     res.set("ProductName", "Blockidle");
     res.set("FileDescription", "Blockidle Desktop Client");
-    res.set("LegalCopyright", "Copyright (c) Blockidle Contributors");
+    res.set("CompanyName", "rapidmesck");
+    res.set("LegalCopyright", "Copyright (c) 2026 rapidmesck");
     if let Err(e) = res.compile() {
         eprintln!("Warning: Failed to compile windows resource: {e}");
     }

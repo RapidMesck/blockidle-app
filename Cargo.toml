@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "Native desktop client shell for Blockidle (https://blockidle.io/play)"
 license = "MIT"
+authors = ["rapidmesck <mesckpvp.mine@gmail.com>"]
+repository = "https://github.com/RapidMesck/blockidle-app"
+homepage = "https://github.com/RapidMesck/blockidle-app"
 
 [dependencies]
 directories = "6"

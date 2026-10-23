@@ -1382,7 +1382,20 @@ if (!ipcMessages.some(m => m.type === 'restore_default_keybindings')) {
     throw new Error('Expected restore_default_keybindings IPC message');
 }
 
-// 5. Pressing Escape when not recording closes the Settings Overlay without leaking Escape to the game
+// 5. About section, author and project links
+const aboutBox = shadow.getElementById('blockidle-about-box');
+const repoLink = shadow.getElementById('blockidle-link-repo');
+const gameLink = shadow.getElementById('blockidle-link-game');
+if (!aboutBox || !repoLink || !gameLink) {
+    throw new Error('Missing #blockidle-about-box or project/game links');
+}
+repoLink.click();
+const openUrlMsg = [...ipcMessages].reverse().find(m => m.type === 'open_external_url');
+if (!openUrlMsg || openUrlMsg.url !== 'https://github.com/RapidMesck/blockidle-app') {
+    throw new Error('Expected open_external_url IPC for repo link, got: ' + JSON.stringify(openUrlMsg));
+}
+
+// 6. Pressing Escape when not recording closes the Settings Overlay without leaking Escape to the game
 dispatchKey('keydown', 'Escape');
 dispatchKey('keyup', 'Escape');
 if (overlay.style.display !== 'none') {

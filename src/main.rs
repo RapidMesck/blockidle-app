@@ -74,16 +74,21 @@ fn build_system_tray(
         true,
         None,
     );
-    let separator = PredefinedMenuItem::separator();
+    let separator1 = PredefinedMenuItem::separator();
+    let project_item = MenuItem::new("GitHub / Projeto", true, None);
+    let separator2 = PredefinedMenuItem::separator();
     let quit_item = MenuItem::new("Quit Blockidle", true, None);
 
     let _ = menu.append(&toggle_visibility_item);
     let _ = menu.append(&toggle_mute_item);
-    let _ = menu.append(&separator);
+    let _ = menu.append(&separator1);
+    let _ = menu.append(&project_item);
+    let _ = menu.append(&separator2);
     let _ = menu.append(&quit_item);
 
     let vis_id = toggle_visibility_item.id().clone();
     let mute_id = toggle_mute_item.id().clone();
+    let project_id = project_item.id().clone();
     let quit_id = quit_item.id().clone();
 
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
@@ -91,6 +96,12 @@ fn build_system_tray(
             let _ = proxy.send_event(UserEvent::TrayAction(TrayAction::ToggleWindowVisibility));
         } else if event.id == mute_id {
             let _ = proxy.send_event(UserEvent::TrayAction(TrayAction::ToggleMute));
+        } else if event.id == project_id {
+            let _ = proxy.send_event(UserEvent::Effects(vec![
+                PlatformEffect::OpenExternalBrowser(
+                    "https://github.com/RapidMesck/blockidle-app".to_string(),
+                ),
+            ]));
         } else if event.id == quit_id {
             let _ = proxy.send_event(UserEvent::TrayAction(TrayAction::Quit));
         }

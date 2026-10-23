@@ -345,7 +345,14 @@
                 'input[type=checkbox]:hover { background-image: url("tex/gui/checkbox_highlighted.png"); } ' +
                 'input[type=checkbox]:checked:hover { background-image: url("tex/gui/checkbox_selected_highlighted.png"); } ' +
                 '#blockidle-keybind-status { font-size: 11px; color: #7a2222; min-height: 14px; margin: 2px 0 4px; text-align: right; } ' +
-                '#blockidle-restore-defaults { display: block; width: 100%; margin-top: 10px; padding: 7px 10px; font-size: 13px; }';
+                '#blockidle-restore-defaults { display: block; width: 100%; margin-top: 10px; padding: 7px 10px; font-size: 13px; } ' +
+                '.bi-about { margin-top: 10px; padding-top: 8px; border-top: 2px solid #8b8b8b; box-shadow: 0 -1px 0 #fff; ' +
+                'display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center; font-size: 11px; color: #555555; } ' +
+                '.bi-about-title { font-size: 12px; color: #2a2a2a; font-weight: normal; } ' +
+                '.bi-about-links { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 2px; } ' +
+                '.bi-about-link { font: 11px "Monocraft", monospace; color: #1b4f9c; text-decoration: underline; cursor: pointer; ' +
+                'background: transparent; border: 0; padding: 0; } ' +
+                '.bi-about-link:hover { color: #000000; }';
             shadow.appendChild(styleEl);
         }
         let hud = shadow.getElementById ? shadow.getElementById('blockidle-fps-hud') : null;
@@ -546,6 +553,55 @@
                 sendIpc({ type: 'restore_default_keybindings' });
             });
             panel.appendChild(restoreBtn);
+
+            const aboutBox = document.createElement('div');
+            aboutBox.id = 'blockidle-about-box';
+            aboutBox.className = 'bi-about';
+
+            const aboutTitle = document.createElement('div');
+            aboutTitle.className = 'bi-about-title';
+            aboutTitle.textContent = 'Blockidle Client v0.1.0';
+
+            const aboutAuthor = document.createElement('div');
+            aboutAuthor.className = 'bi-about-author';
+            aboutAuthor.textContent = 'Autor: rapidmesck';
+
+            const aboutLinks = document.createElement('div');
+            aboutLinks.className = 'bi-about-links';
+
+            const repoLink = document.createElement('a');
+            repoLink.id = 'blockidle-link-repo';
+            repoLink.className = 'bi-about-link';
+            repoLink.href = 'https://github.com/RapidMesck/blockidle-app';
+            repoLink.textContent = 'GitHub / Projeto';
+            repoLink.target = '_blank';
+            onElementEvent(repoLink, 'click', function(e) {
+                if (e && typeof e.preventDefault === 'function') {
+                    e.preventDefault();
+                }
+                sendIpc({ type: 'open_external_url', url: 'https://github.com/RapidMesck/blockidle-app' });
+            });
+
+            const gameLink = document.createElement('a');
+            gameLink.id = 'blockidle-link-game';
+            gameLink.className = 'bi-about-link';
+            gameLink.href = 'https://blockidle.io';
+            gameLink.textContent = 'blockidle.io';
+            gameLink.target = '_blank';
+            onElementEvent(gameLink, 'click', function(e) {
+                if (e && typeof e.preventDefault === 'function') {
+                    e.preventDefault();
+                }
+                sendIpc({ type: 'open_external_url', url: 'https://blockidle.io' });
+            });
+
+            aboutLinks.appendChild(repoLink);
+            aboutLinks.appendChild(gameLink);
+
+            aboutBox.appendChild(aboutTitle);
+            aboutBox.appendChild(aboutAuthor);
+            aboutBox.appendChild(aboutLinks);
+            panel.appendChild(aboutBox);
 
             overlay.appendChild(panel);
             shadow.appendChild(overlay);

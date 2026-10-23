@@ -157,6 +157,7 @@ jobs:
           cat > "${DEB_DIR}/usr/share/applications/blockidle.desktop" << 'EOF'
           [Desktop Entry]
           Name=Blockidle
+          GenericName=Blockidle Client
           Comment=Native desktop client for Blockidle (https://blockidle.io/play)
           Exec=/usr/bin/blockidle-app
           Icon=blockidle
@@ -173,7 +174,8 @@ jobs:
           Priority: optional
           Architecture: amd64
           Depends: libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1
-          Maintainer: Blockidle Contributors
+          Maintainer: rapidmesck <mesckpvp.mine@gmail.com>
+          Homepage: https://github.com/RapidMesck/blockidle-app
           Description: Native desktop client shell for Blockidle (https://blockidle.io/play)
           EOF
 
@@ -200,6 +202,7 @@ jobs:
           cat > "${APPDIR}/blockidle.desktop" << 'EOF'
           [Desktop Entry]
           Name=Blockidle
+          GenericName=Blockidle Client
           Comment=Native desktop client for Blockidle (https://blockidle.io/play)
           Exec=blockidle-app
           Icon=blockidle

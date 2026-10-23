@@ -76,7 +76,7 @@ jobs:
           echo "should_release=true" >> "$GITHUB_OUTPUT"
 
   build-linux:
-    name: Build Linux x86_64 (.tar.gz & .deb)
+    name: Build Linux x86_64 (.tar.gz, .deb & .AppImage)
     needs: check-version
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-24.04
@@ -93,7 +93,11 @@ jobs:
             libayatana-appindicator3-dev \
             libxdo-dev \
             pkg-config \
-            build-essential
+            build-essential \
+            file \
+            desktop-file-utils \
+            curl \
+            ca-certificates
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -112,7 +116,7 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
-      - name: Package Linux tar.gz and .deb
+      - name: Package Linux tar.gz, .deb and .AppImage
         env:
           VERSION: ${{ needs.check-version.outputs.version }}
           TAG: ${{ needs.check-version.outputs.tag }}
@@ -121,6 +125,14 @@ jobs:
           mkdir -p dist
 
           strip target/release/blockidle-app
+
+          cat > blockidle.svg << 'EOF'
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+            <rect width="64" height="64" fill="#182026"/>
+            <rect x="8" y="8" width="48" height="48" fill="#52b848"/>
+            <rect x="16" y="16" width="32" height="32" fill="#2e7d32"/>
+          </svg>
+          EOF
 
           # 1. Portable .tar.gz archive
           STAGE_DIR="blockidle-app-${TAG}-linux-x86_64"
@@ -134,15 +146,18 @@ jobs:
           mkdir -p "${DEB_DIR}/DEBIAN"
           mkdir -p "${DEB_DIR}/usr/bin"
           mkdir -p "${DEB_DIR}/usr/share/applications"
+          mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps"
 
           cp target/release/blockidle-app "${DEB_DIR}/usr/bin/blockidle-app"
           chmod 755 "${DEB_DIR}/usr/bin/blockidle-app"
+          cp blockidle.svg "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps/blockidle.svg"
 
           cat > "${DEB_DIR}/usr/share/applications/blockidle.desktop" << 'EOF'
           [Desktop Entry]
           Name=Blockidle
           Comment=Native desktop client for Blockidle (https://blockidle.io/play)
           Exec=/usr/bin/blockidle-app
+          Icon=blockidle
           Terminal=false
           Type=Application
           Categories=Game;
@@ -161,6 +176,48 @@ jobs:
           EOF
 
           dpkg-deb --build --root-owner-group "${DEB_DIR}" "dist/blockidle-app_${VERSION}_amd64.deb"
+
+          # 3. Linux AppImage (.AppImage)
+          APPDIR="blockidle-app.AppDir"
+          mkdir -p "${APPDIR}/usr/bin"
+          mkdir -p "${APPDIR}/usr/share/applications"
+          mkdir -p "${APPDIR}/usr/share/icons/hicolor/scalable/apps"
+
+          cp target/release/blockidle-app "${APPDIR}/usr/bin/blockidle-app"
+          chmod 755 "${APPDIR}/usr/bin/blockidle-app"
+
+          cp blockidle.svg "${APPDIR}/blockidle.svg"
+          cp blockidle.svg "${APPDIR}/.DirIcon"
+          cp blockidle.svg "${APPDIR}/usr/share/icons/hicolor/scalable/apps/blockidle.svg"
+
+          cat > "${APPDIR}/blockidle.desktop" << 'EOF'
+          [Desktop Entry]
+          Name=Blockidle
+          Comment=Native desktop client for Blockidle (https://blockidle.io/play)
+          Exec=blockidle-app
+          Icon=blockidle
+          Terminal=false
+          Type=Application
+          Categories=Game;
+          StartupWMClass=blockidle-app
+          EOF
+          cp "${APPDIR}/blockidle.desktop" "${APPDIR}/usr/share/applications/blockidle.desktop"
+
+          cat > "${APPDIR}/AppRun" << 'EOF'
+          #!/bin/sh
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          export PATH="${HERE}/usr/bin:${PATH}"
+          exec "${HERE}/usr/bin/blockidle-app" "$@"
+          EOF
+          chmod 755 "${APPDIR}/AppRun"
+
+          curl -fsSL -o appimagetool-x86_64.AppImage \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x appimagetool-x86_64.AppImage
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool-x86_64.AppImage \
+            "${APPDIR}" "dist/blockidle-app-${TAG}-x86_64.AppImage"
+          chmod 755 "dist/blockidle-app-${TAG}-x86_64.AppImage"
 
           cd dist
           sha256sum * > SHA256SUMS-linux-x86_64.txt

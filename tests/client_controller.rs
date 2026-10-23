@@ -33,6 +33,7 @@ function createMockNode(tagName) {
         disabled: false,
         style: {},
         dataset: {},
+        title: '',
         textContent: '',
         innerHTML: '',
         children: children,
@@ -446,6 +447,10 @@ fn generates_initialization_script_and_processes_ipc_messages_from_game_view() {
     let mut controller = ClientController::load_or_default(dir.path());
 
     let init_script = controller.initialization_script();
+    assert!(
+        !init_script.contains("__BLOCKIDLE_APP_VERSION__"),
+        "initialization_script still contains unreplaced __BLOCKIDLE_APP_VERSION__"
+    );
     assert!(init_script.contains("window.ipc.postMessage"));
     assert!(init_script.contains("__BLOCKIDLE_CLIENT_STATE__"));
     assert!(init_script.contains("__blockidleApplyState"));
@@ -773,6 +778,10 @@ fn initialization_script_enforces_raf_pacing_zero_fps_pause_and_flush_and_cancel
         .expect("update settings");
 
     let init_script = controller.initialization_script();
+    assert!(
+        !init_script.contains("__BLOCKIDLE_APP_VERSION__"),
+        "initialization_script still contains unreplaced __BLOCKIDLE_APP_VERSION__"
+    );
     let unfocus_sync_script = controller
         .handle_focus_changed(false)
         .into_iter()
@@ -878,6 +887,10 @@ fn initialization_script_shrinks_renderer_and_prunes_idle_memory_when_cap_is_zer
         .expect("update settings");
 
     let init_script = controller.initialization_script();
+    assert!(
+        !init_script.contains("__BLOCKIDLE_APP_VERSION__"),
+        "initialization_script still contains unreplaced __BLOCKIDLE_APP_VERSION__"
+    );
     let tray_sync_script = controller
         .hide_to_tray()
         .into_iter()
@@ -952,6 +965,10 @@ fn toggles_audio_mute_from_tray_and_ipc_persists_state_syncs_tray_menu_and_injec
 
     assert!(!controller.settings().audio_muted);
     let init_script = controller.initialization_script();
+    assert!(
+        !init_script.contains("__BLOCKIDLE_APP_VERSION__"),
+        "initialization_script still contains unreplaced __BLOCKIDLE_APP_VERSION__"
+    );
     assert!(init_script.contains("AudioContext"));
     assert!(init_script.contains("webkitAudioContext"));
     assert!(init_script.contains("HTMLMediaElement"));
@@ -1018,6 +1035,10 @@ fn initialization_script_enforces_keep_awake_visibility_suppression_when_enabled
     assert!(controller.settings().keep_awake);
 
     let init_script = controller.initialization_script();
+    assert!(
+        !init_script.contains("__BLOCKIDLE_APP_VERSION__"),
+        "initialization_script still contains unreplaced __BLOCKIDLE_APP_VERSION__"
+    );
 
     let mut disabled_settings = controller.settings().clone();
     disabled_settings.keep_awake = false;
@@ -1078,6 +1099,10 @@ fn initialization_script_renders_shadow_dom_fps_hud_with_pointer_events_none_and
     assert!(!controller.settings().fps_hud_visible);
 
     let init_script = controller.initialization_script();
+    assert!(
+        !init_script.contains("__BLOCKIDLE_APP_VERSION__"),
+        "initialization_script still contains unreplaced __BLOCKIDLE_APP_VERSION__"
+    );
 
     // Enable FPS HUD and set Foreground FPS Cap to 144
     let mut hud_on = controller.settings().clone();
@@ -1367,6 +1392,10 @@ fn initialization_script_renders_shadow_dom_settings_overlay_records_keybindings
     let dir = tempdir().expect("tempdir");
     let mut controller = ClientController::load_or_default(dir.path());
     let init_script = controller.initialization_script();
+    assert!(
+        !init_script.contains("__BLOCKIDLE_APP_VERSION__"),
+        "initialization_script still contains unreplaced __BLOCKIDLE_APP_VERSION__"
+    );
 
     let test_body = r#"
 // Register simulated game keydown/keyup listeners in bubble phase (like blockidle.io js/entrada.js)
@@ -1453,6 +1482,14 @@ if (!fgSelect || !bgSelect || !hudToggle || !keepAwakeToggle || !closeToTrayTogg
     throw new Error('Missing one or more required controls in Settings Overlay');
 }
 
+if (!fgSelect.title || !fgSelect.title.includes('foco')) throw new Error('Expected fgSelect title tooltip, got: ' + fgSelect.title);
+if (!bgSelect.title || !bgSelect.title.includes('segundo plano')) throw new Error('Expected bgSelect title tooltip, got: ' + bgSelect.title);
+if (!hudToggle.title || !hudToggle.title.includes('contador de quadros')) throw new Error('Expected hudToggle title tooltip, got: ' + hudToggle.title);
+if (!keepAwakeToggle.title || !keepAwakeToggle.title.includes('suspenda')) throw new Error('Expected keepAwakeToggle title tooltip, got: ' + keepAwakeToggle.title);
+if (!closeToTrayToggle.title || !closeToTrayToggle.title.includes('bandeja')) throw new Error('Expected closeToTrayToggle title tooltip, got: ' + closeToTrayToggle.title);
+if (!muteToggle.title || !muteToggle.title.includes('áudio')) throw new Error('Expected muteToggle title tooltip, got: ' + muteToggle.title);
+if (!fullscreenToggle.title || !fullscreenToggle.title.includes('tela cheia')) throw new Error('Expected fullscreenToggle title tooltip, got: ' + fullscreenToggle.title);
+
 fgSelect.change('Fps144');
 bgSelect.change('Fps0');
 hudToggle.change(undefined, true);
@@ -1478,6 +1515,9 @@ if (!lastSettingsMsg ||
 const hudKeyBtn = shadow.getElementById('blockidle-keybind-toggle_fps_hud');
 if (!hudKeyBtn) {
     throw new Error('Missing #blockidle-keybind-toggle_fps_hud button');
+}
+if (!hudKeyBtn.title || !hudKeyBtn.title.includes('atalho')) {
+    throw new Error('Expected keybind button to have title tooltip, got: ' + hudKeyBtn.title);
 }
 hudKeyBtn.click();
 if (!hudKeyBtn.textContent.toLowerCase().includes('press')) {
@@ -1522,6 +1562,9 @@ const restoreBtn = shadow.getElementById('blockidle-restore-defaults');
 if (!restoreBtn) {
     throw new Error('Missing #blockidle-restore-defaults button');
 }
+if (!restoreBtn.title || !restoreBtn.title.includes('padrão')) {
+    throw new Error('Expected restore defaults button to have title tooltip, got: ' + restoreBtn.title);
+}
 restoreBtn.click();
 if (hudKeyBtn.textContent !== 'F3') {
     throw new Error('Expected Restore Defaults to reset toggle_fps_hud button to F3, got: ' + hudKeyBtn.textContent);
@@ -1532,10 +1575,17 @@ if (!ipcMessages.some(m => m.type === 'restore_default_keybindings')) {
 
 // 5. About section, author and project links
 const aboutBox = shadow.getElementById('blockidle-about-box');
+const aboutTitle = shadow.getElementById('blockidle-about-title');
 const repoLink = shadow.getElementById('blockidle-link-repo');
 const gameLink = shadow.getElementById('blockidle-link-game');
-if (!aboutBox || !repoLink || !gameLink) {
-    throw new Error('Missing #blockidle-about-box or project/game links');
+if (!aboutBox || !aboutTitle || !repoLink || !gameLink) {
+    throw new Error('Missing #blockidle-about-box, #blockidle-about-title or project/game links');
+}
+if (aboutTitle.textContent.includes('__BLOCKIDLE_APP_VERSION__')) {
+    throw new Error('Footer version contains unreplaced placeholder: ' + aboutTitle.textContent);
+}
+if (!aboutTitle.textContent.startsWith('Blockidle Client v')) {
+    throw new Error('Expected about title to show client version, got: ' + aboutTitle.textContent);
 }
 repoLink.click();
 const openUrlMsg = [...ipcMessages].reverse().find(m => m.type === 'open_external_url');
@@ -1596,6 +1646,10 @@ fn ensures_fontconfig_hintslight_and_mounts_webview_compat_style_for_fonts_and_s
     assert!(xml.contains("<edit name=\"rgba\" mode=\"assign\"><const>none</const></edit>"));
 
     let init_script = controller.initialization_script();
+    assert!(
+        !init_script.contains("__BLOCKIDLE_APP_VERSION__"),
+        "initialization_script still contains unreplaced __BLOCKIDLE_APP_VERSION__"
+    );
     let test_body = r#"
 const compatStyle = document.getElementById('blockidle-webview-compat-style');
 if (!compatStyle) {
@@ -1820,6 +1874,10 @@ fn initialization_script_renders_update_section_and_dispatches_update_ipc() {
     let dir = tempdir().expect("tempdir");
     let controller = ClientController::load_or_default(dir.path());
     let init_script = controller.initialization_script();
+    assert!(
+        !init_script.contains("__BLOCKIDLE_APP_VERSION__"),
+        "initialization_script still contains unreplaced __BLOCKIDLE_APP_VERSION__"
+    );
 
     let test_body = r#"
 const host = document.getElementById('blockidle-client-overlay-host');

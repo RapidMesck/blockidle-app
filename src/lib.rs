@@ -1069,10 +1069,9 @@ impl ClientController {
             serde_json::to_string(&self.webview_state()).unwrap_or_else(|_| "{}".to_string());
         INIT_SCRIPT_TEMPLATE
             .replacen("__BLOCKIDLE_INITIAL_STATE_JSON__", &state_json, 1)
-            .replacen(
+            .replace(
                 "__BLOCKIDLE_APP_VERSION__",
                 &format!("v{}", env!("CARGO_PKG_VERSION")),
-                1,
             )
     }
 

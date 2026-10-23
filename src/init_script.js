@@ -109,6 +109,7 @@
     let checkUpdateBtnElement = null;
     let startUpdateBtnElement = null;
     let relaunchBtnElement = null;
+    let aboutTitleElement = null;
 
     const KEYBIND_ACTIONS = [
         { key: 'toggle_settings_overlay', label: 'Toggle Settings Overlay' },
@@ -301,6 +302,10 @@
                 }
             }
         }
+        if (aboutTitleElement) {
+            const currentVer = (st && st.app_version) ? st.app_version : '__BLOCKIDLE_APP_VERSION__';
+            aboutTitleElement.textContent = 'Blockidle Client ' + currentVer;
+        }
     }
 
     function ensurePageCompatStyleMounted() {
@@ -491,13 +496,22 @@
 
             addSection('Desempenho');
 
-            function createFpsSelectRow(id, labelText, settingField, presets) {
+            function createFpsSelectRow(id, labelText, settingField, presets, tooltipText) {
                 const row = document.createElement('div');
                 row.className = 'bi-row';
+                if (tooltipText) {
+                    row.title = tooltipText;
+                }
                 const label = document.createElement('label');
                 label.textContent = labelText;
+                if (tooltipText) {
+                    label.title = tooltipText;
+                }
                 const select = document.createElement('select');
                 select.id = id;
+                if (tooltipText) {
+                    select.title = tooltipText;
+                }
                 for (let i = 0; i < presets.length; i++) {
                     const opt = document.createElement('option');
                     opt.value = presets[i][0];
@@ -531,7 +545,8 @@
                     ['Fps144', '144 FPS'],
                     ['Fps240', '240 FPS'],
                     ['Unlimited', 'Unlimited']
-                ]
+                ],
+                'Limite de taxa de quadros quando a janela estiver em foco'
             );
 
             bgSelectElement = createFpsSelectRow(
@@ -544,7 +559,8 @@
                     ['Fps15', '15 FPS'],
                     ['Fps30', '30 FPS'],
                     ['Fps60', '60 FPS']
-                ]
+                ],
+                'Limite de FPS quando a janela estiver em segundo plano ou minimizada (economiza CPU e bateria)'
             );
 
             addSeparator();
@@ -552,21 +568,55 @@
 
             // Toggles
             const toggleDefs = [
-                { id: 'blockidle-toggle-fps-hud', field: 'fps_hud_visible', label: 'FPS HUD' },
-                { id: 'blockidle-toggle-keep-awake', field: 'keep_awake', label: 'Keep Awake' },
-                { id: 'blockidle-toggle-close-to-tray', field: 'close_to_tray', label: 'Fechar para Bandeja' },
-                { id: 'blockidle-toggle-audio-mute', field: 'audio_muted', label: 'Silenciar Áudio' },
-                { id: 'blockidle-toggle-fullscreen', field: 'fullscreen', label: 'Tela Cheia (F11)' }
+                {
+                    id: 'blockidle-toggle-fps-hud',
+                    field: 'fps_hud_visible',
+                    label: 'FPS HUD',
+                    tooltip: 'Exibe o contador de quadros por segundo em tempo real no canto da tela'
+                },
+                {
+                    id: 'blockidle-toggle-keep-awake',
+                    field: 'keep_awake',
+                    label: 'Keep Awake',
+                    tooltip: 'Impede que o computador suspenda ou bloqueie a tela durante o jogo idle'
+                },
+                {
+                    id: 'blockidle-toggle-close-to-tray',
+                    field: 'close_to_tray',
+                    label: 'Fechar para Bandeja',
+                    tooltip: 'Minimiza para o ícone da bandeja do sistema (tray) ao clicar no botão fechar da janela'
+                },
+                {
+                    id: 'blockidle-toggle-audio-mute',
+                    field: 'audio_muted',
+                    label: 'Silenciar Áudio',
+                    tooltip: 'Desativa temporariamente todo o áudio do jogo sem alterar o volume do sistema'
+                },
+                {
+                    id: 'blockidle-toggle-fullscreen',
+                    field: 'fullscreen',
+                    label: 'Tela Cheia (F11)',
+                    tooltip: 'Alterna a visualização entre modo janela e tela cheia'
+                }
             ];
             for (let i = 0; i < toggleDefs.length; i++) {
                 const def = toggleDefs[i];
                 const row = document.createElement('div');
                 row.className = 'bi-row';
+                if (def.tooltip) {
+                    row.title = def.tooltip;
+                }
                 const lbl = document.createElement('label');
                 lbl.textContent = def.label;
+                if (def.tooltip) {
+                    lbl.title = def.tooltip;
+                }
                 const input = document.createElement('input');
                 input.type = 'checkbox';
                 input.id = def.id;
+                if (def.tooltip) {
+                    input.title = def.tooltip;
+                }
                 onElementEvent(input, 'change', function() {
                     const st = window.__BLOCKIDLE_CLIENT_STATE__;
                     if (st && st.settings) {
@@ -594,11 +644,15 @@
                 const item = KEYBIND_ACTIONS[i];
                 const row = document.createElement('div');
                 row.className = 'bi-row';
+                const keybindTooltip = 'Clique para gravar um novo atalho para ' + item.label;
+                row.title = keybindTooltip;
                 const lbl = document.createElement('span');
                 lbl.textContent = item.label;
+                lbl.title = keybindTooltip;
                 const btn = document.createElement('button');
                 btn.id = 'blockidle-keybind-' + item.key;
                 btn.className = 'bi-btn';
+                btn.title = keybindTooltip;
                 onElementEvent(btn, 'click', function() {
                     recordingAction = item.key;
                     keybindStatusText = 'Pressione uma tecla ou Esc para cancelar';
@@ -614,6 +668,7 @@
             restoreBtn.id = 'blockidle-restore-defaults';
             restoreBtn.className = 'bi-btn';
             restoreBtn.textContent = 'Restaurar Padrões';
+            restoreBtn.title = 'Restaura todos os atalhos de teclado para as configurações padrão';
             onElementEvent(restoreBtn, 'click', function() {
                 const st = window.__BLOCKIDLE_CLIENT_STATE__;
                 recordingAction = null;
@@ -636,7 +691,10 @@
             const updateStatus = document.createElement('div');
             updateStatus.id = 'blockidle-update-status';
             updateStatus.style.marginBottom = '6px';
-            updateStatus.textContent = 'Versão instalada: __BLOCKIDLE_APP_VERSION__';
+            const initialUpdateVer = (window.__BLOCKIDLE_CLIENT_STATE__ && window.__BLOCKIDLE_CLIENT_STATE__.app_version)
+                ? window.__BLOCKIDLE_CLIENT_STATE__.app_version
+                : '__BLOCKIDLE_APP_VERSION__';
+            updateStatus.textContent = 'Versão instalada: ' + initialUpdateVer;
 
             const updateProgress = document.createElement('div');
             updateProgress.id = 'blockidle-update-progress';
@@ -651,6 +709,7 @@
             checkUpdateBtn.id = 'blockidle-check-update-btn';
             checkUpdateBtn.className = 'bi-btn';
             checkUpdateBtn.textContent = 'Verificar Atualizações';
+            checkUpdateBtn.title = 'Verifica se há novas versões disponíveis no GitHub Releases';
             onElementEvent(checkUpdateBtn, 'click', function() {
                 sendIpc({ type: 'check_for_updates' });
             });
@@ -659,6 +718,7 @@
             startUpdateBtn.id = 'blockidle-start-update-btn';
             startUpdateBtn.className = 'bi-btn';
             startUpdateBtn.textContent = 'Atualizar Agora';
+            startUpdateBtn.title = 'Baixa e prepara a nova versão do Blockidle Client';
             startUpdateBtn.style.display = 'none';
             onElementEvent(startUpdateBtn, 'click', function() {
                 const st = window.__BLOCKIDLE_CLIENT_STATE__;
@@ -675,6 +735,7 @@
             relaunchBtn.id = 'blockidle-relaunch-btn';
             relaunchBtn.className = 'bi-btn';
             relaunchBtn.textContent = 'Reiniciar Agora';
+            relaunchBtn.title = 'Reinicia o aplicativo para aplicar a nova versão instalada';
             relaunchBtn.style.display = 'none';
             onElementEvent(relaunchBtn, 'click', function() {
                 sendIpc({ type: 'relaunch_app' });
@@ -701,8 +762,13 @@
             aboutBox.className = 'bi-about';
 
             const aboutTitle = document.createElement('div');
+            aboutTitle.id = 'blockidle-about-title';
             aboutTitle.className = 'bi-about-title';
-            aboutTitle.textContent = 'Blockidle Client __BLOCKIDLE_APP_VERSION__';
+            const initialAppVer = (window.__BLOCKIDLE_CLIENT_STATE__ && window.__BLOCKIDLE_CLIENT_STATE__.app_version)
+                ? window.__BLOCKIDLE_CLIENT_STATE__.app_version
+                : '__BLOCKIDLE_APP_VERSION__';
+            aboutTitle.textContent = 'Blockidle Client ' + initialAppVer;
+            aboutTitleElement = aboutTitle;
 
             const aboutAuthor = document.createElement('div');
             aboutAuthor.className = 'bi-about-author';
@@ -716,6 +782,7 @@
             repoLink.className = 'bi-about-link';
             repoLink.href = 'https://github.com/RapidMesck/blockidle-app';
             repoLink.textContent = 'GitHub / Projeto';
+            repoLink.title = 'Abre o repositório do projeto no GitHub';
             repoLink.target = '_blank';
             onElementEvent(repoLink, 'click', function(e) {
                 if (e && typeof e.preventDefault === 'function') {
@@ -729,6 +796,7 @@
             gameLink.className = 'bi-about-link';
             gameLink.href = 'https://blockidle.io';
             gameLink.textContent = 'blockidle.io';
+            gameLink.title = 'Abre a página oficial do Blockidle no navegador';
             gameLink.target = '_blank';
             onElementEvent(gameLink, 'click', function(e) {
                 if (e && typeof e.preventDefault === 'function') {

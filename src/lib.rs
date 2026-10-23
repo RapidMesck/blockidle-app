@@ -13,6 +13,21 @@ pub enum NavigationDecision {
     Block,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrayMenuState {
+    pub window_visible: bool,
+    pub audio_muted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayAction {
+    ToggleWindowVisibility,
+    Show,
+    Hide,
+    ToggleMute,
+    Quit,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlatformEffect {
     OpenExternalBrowser(String),
@@ -20,6 +35,7 @@ pub enum PlatformEffect {
     SetWindowVisible(bool),
     SetFullscreen(bool),
     ReloadGameView,
+    UpdateTrayMenu(TrayMenuState),
     ExitApp,
 }
 
@@ -31,13 +47,17 @@ pub enum IpcMessage {
     OpenExternalUrl { url: String },
     ReloadGameView,
     ToggleFullscreen,
+    ToggleAudioMute,
+    HideToTray,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebViewClientState {
     pub settings: ClientSettings,
     pub window_focused: bool,
+    pub window_visible: bool,
     pub settings_overlay_open: bool,
+    pub active_fps_cap: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +71,20 @@ pub enum ForegroundFpsCap {
     Unlimited,
 }
 
+impl ForegroundFpsCap {
+    pub fn target_fps(self) -> Option<u32> {
+        match self {
+            Self::Fps15 => Some(15),
+            Self::Fps30 => Some(30),
+            Self::Fps60 => Some(60),
+            Self::Fps120 => Some(120),
+            Self::Fps144 => Some(144),
+            Self::Fps240 => Some(240),
+            Self::Unlimited => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackgroundFpsCap {
     Fps0,
@@ -58,6 +92,18 @@ pub enum BackgroundFpsCap {
     Fps15,
     Fps30,
     Fps60,
+}
+
+impl BackgroundFpsCap {
+    pub fn target_fps(self) -> u32 {
+        match self {
+            Self::Fps0 => 0,
+            Self::Fps5 => 5,
+            Self::Fps15 => 15,
+            Self::Fps30 => 30,
+            Self::Fps60 => 60,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +183,7 @@ pub struct ClientController {
     data_dir: PathBuf,
     settings: ClientSettings,
     window_focused: bool,
+    window_visible: bool,
     settings_overlay_open: bool,
 }
 
@@ -158,6 +205,7 @@ impl ClientController {
             data_dir: data_dir.as_ref().to_path_buf(),
             settings,
             window_focused: true,
+            window_visible: true,
             settings_overlay_open: false,
         }
     }
@@ -252,11 +300,32 @@ impl ClientController {
         }
     }
 
+    pub fn is_window_visible(&self) -> bool {
+        self.window_visible
+    }
+
+    pub fn active_fps_cap(&self) -> Option<u32> {
+        if self.window_focused && self.window_visible {
+            self.settings.foreground_fps_cap.target_fps()
+        } else {
+            Some(self.settings.background_fps_cap.target_fps())
+        }
+    }
+
+    pub fn tray_menu_state(&self) -> TrayMenuState {
+        TrayMenuState {
+            window_visible: self.window_visible,
+            audio_muted: self.settings.audio_muted,
+        }
+    }
+
     pub fn webview_state(&self) -> WebViewClientState {
         WebViewClientState {
             settings: self.settings.clone(),
             window_focused: self.window_focused,
+            window_visible: self.window_visible,
             settings_overlay_open: self.settings_overlay_open,
+            active_fps_cap: self.active_fps_cap(),
         }
     }
 
@@ -286,10 +355,98 @@ impl ClientController {
         }}
     }}
 
+    function isAudioMuted() {{
+        var st = window.__BLOCKIDLE_CLIENT_STATE__;
+        return Boolean(st && st.settings && st.settings.audio_muted);
+    }}
+
+    var trackedAudioContexts = [];
+    var trackedMediaElements = new Set();
+
+    function wrapAudioContextConstructor(ctorName) {{
+        var NativeAudioContext = window[ctorName];
+        if (typeof NativeAudioContext !== 'function') {{
+            return;
+        }}
+        function WrappedAudioContext() {{
+            var ctx = Reflect.construct(NativeAudioContext, arguments, new.target || WrappedAudioContext);
+            var nativeResume = typeof ctx.resume === 'function' ? ctx.resume.bind(ctx) : null;
+            var nativeSuspend = typeof ctx.suspend === 'function' ? ctx.suspend.bind(ctx) : null;
+            ctx.__blockidleNativeResume = nativeResume;
+            ctx.__blockidleNativeSuspend = nativeSuspend;
+            if (nativeResume) {{
+                ctx.resume = function() {{
+                    if (isAudioMuted()) {{
+                        if (nativeSuspend) {{
+                            return nativeSuspend();
+                        }}
+                        return Promise.resolve();
+                    }}
+                    return nativeResume();
+                }};
+            }}
+            trackedAudioContexts.push(ctx);
+            if (isAudioMuted() && nativeSuspend) {{
+                try {{ nativeSuspend(); }} catch (_) {{}}
+            }}
+            return ctx;
+        }}
+        WrappedAudioContext.prototype = NativeAudioContext.prototype;
+        Object.setPrototypeOf(WrappedAudioContext, NativeAudioContext);
+        window[ctorName] = WrappedAudioContext;
+    }}
+
+    wrapAudioContextConstructor('AudioContext');
+    wrapAudioContextConstructor('webkitAudioContext');
+
+    if (typeof window.HTMLMediaElement !== 'undefined' && window.HTMLMediaElement.prototype) {{
+        var nativePlay = window.HTMLMediaElement.prototype.play;
+        if (typeof nativePlay === 'function') {{
+            window.HTMLMediaElement.prototype.play = function() {{
+                trackedMediaElements.add(this);
+                if (isAudioMuted()) {{
+                    this.muted = true;
+                }}
+                return nativePlay.apply(this, arguments);
+            }};
+        }}
+    }}
+
+    function syncAudioMuteState() {{
+        var muted = isAudioMuted();
+        for (var i = 0; i < trackedAudioContexts.length; i++) {{
+            var ctx = trackedAudioContexts[i];
+            if (!ctx || ctx.state === 'closed') {{
+                continue;
+            }}
+            try {{
+                if (muted && typeof ctx.__blockidleNativeSuspend === 'function') {{
+                    ctx.__blockidleNativeSuspend();
+                }} else if (!muted && typeof ctx.__blockidleNativeResume === 'function') {{
+                    ctx.__blockidleNativeResume();
+                }}
+            }} catch (_) {{}}
+        }}
+        if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {{
+            var domMedia = document.querySelectorAll('audio, video');
+            for (var j = 0; j < domMedia.length; j++) {{
+                trackedMediaElements.add(domMedia[j]);
+            }}
+        }}
+        trackedMediaElements.forEach(function(media) {{
+            if (media) {{
+                media.muted = muted;
+            }}
+        }});
+    }}
+
     window.__blockidleApplyState = function(nextState) {{
         window.__BLOCKIDLE_CLIENT_STATE__ = nextState;
+        syncAudioMuteState();
         window.dispatchEvent(new CustomEvent('blockidle:state', {{ detail: nextState }}));
     }};
+
+    syncAudioMuteState();
 
     window.__BLOCKIDLE_CLIENT__ = {{
         getState: function() {{ return window.__BLOCKIDLE_CLIENT_STATE__; }},
@@ -299,6 +456,7 @@ impl ClientController {
 
     if (document.readyState === 'loading') {{
         document.addEventListener('DOMContentLoaded', function() {{
+            syncAudioMuteState();
             sendIpc({{ type: 'client_ready' }});
         }}, {{ once: true }});
     }} else {{
@@ -322,10 +480,14 @@ impl ClientController {
             IpcMessage::UpdateSettings { settings } => {
                 let fullscreen_changed = self.settings.fullscreen != settings.fullscreen;
                 let fullscreen_target = settings.fullscreen;
+                let audio_muted_changed = self.settings.audio_muted != settings.audio_muted;
                 let _ = self.update_settings(settings);
                 let mut effects = Vec::new();
                 if fullscreen_changed {
                     effects.push(PlatformEffect::SetFullscreen(fullscreen_target));
+                }
+                if audio_muted_changed {
+                    effects.push(PlatformEffect::UpdateTrayMenu(self.tray_menu_state()));
                 }
                 effects.push(PlatformEffect::SyncWebViewState(
                     self.webview_state_sync_script(),
@@ -345,6 +507,8 @@ impl ClientController {
                     PlatformEffect::SyncWebViewState(self.webview_state_sync_script()),
                 ]
             }
+            IpcMessage::ToggleAudioMute => self.toggle_audio_mute(),
+            IpcMessage::HideToTray => self.hide_to_tray(),
         }
     }
 
@@ -363,13 +527,54 @@ impl ClientController {
         )]
     }
 
+    pub fn hide_to_tray(&mut self) -> Vec<PlatformEffect> {
+        self.window_visible = false;
+        self.window_focused = false;
+        vec![
+            PlatformEffect::SetWindowVisible(false),
+            PlatformEffect::UpdateTrayMenu(self.tray_menu_state()),
+            PlatformEffect::SyncWebViewState(self.webview_state_sync_script()),
+        ]
+    }
+
+    pub fn restore_from_tray(&mut self) -> Vec<PlatformEffect> {
+        self.window_visible = true;
+        self.window_focused = true;
+        vec![
+            PlatformEffect::SetWindowVisible(true),
+            PlatformEffect::UpdateTrayMenu(self.tray_menu_state()),
+            PlatformEffect::SyncWebViewState(self.webview_state_sync_script()),
+        ]
+    }
+
+    pub fn toggle_audio_mute(&mut self) -> Vec<PlatformEffect> {
+        self.settings.audio_muted = !self.settings.audio_muted;
+        let _ = self.save_settings();
+        vec![
+            PlatformEffect::UpdateTrayMenu(self.tray_menu_state()),
+            PlatformEffect::SyncWebViewState(self.webview_state_sync_script()),
+        ]
+    }
+
+    pub fn handle_tray_action(&mut self, action: TrayAction) -> Vec<PlatformEffect> {
+        match action {
+            TrayAction::Hide => self.hide_to_tray(),
+            TrayAction::Show => self.restore_from_tray(),
+            TrayAction::ToggleWindowVisibility => {
+                if self.window_visible {
+                    self.hide_to_tray()
+                } else {
+                    self.restore_from_tray()
+                }
+            }
+            TrayAction::ToggleMute => self.toggle_audio_mute(),
+            TrayAction::Quit => vec![PlatformEffect::ExitApp],
+        }
+    }
+
     pub fn handle_close_requested(&mut self) -> Vec<PlatformEffect> {
         if self.settings.close_to_tray {
-            self.window_focused = false;
-            vec![
-                PlatformEffect::SetWindowVisible(false),
-                PlatformEffect::SyncWebViewState(self.webview_state_sync_script()),
-            ]
+            self.hide_to_tray()
         } else {
             vec![PlatformEffect::ExitApp]
         }

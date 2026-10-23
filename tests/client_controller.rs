@@ -1,6 +1,6 @@
 use blockidle_app::{
     BackgroundFpsCap, ClientController, ClientSettings, ForegroundFpsCap, Keybindings,
-    NavigationDecision, PlatformEffect,
+    NavigationDecision, PlatformEffect, TrayAction, TrayMenuState,
 };
 use tempfile::tempdir;
 
@@ -187,6 +187,157 @@ fn persists_window_dimensions_on_resize_and_handles_window_lifecycle_events() {
     let close_effects = controller.handle_close_requested();
     assert_eq!(close_effects, vec![PlatformEffect::ExitApp]);
 }
+
+#[test]
+fn tray_actions_hide_and_restore_window_switching_between_background_and_foreground_fps_caps_and_quit() {
+    let dir = tempdir().expect("tempdir");
+    let mut controller = ClientController::load_or_default(dir.path());
+
+    let mut settings = controller.settings().clone();
+    settings.foreground_fps_cap = ForegroundFpsCap::Fps144;
+    settings.background_fps_cap = BackgroundFpsCap::Fps5;
+    controller.update_settings(settings).expect("update settings");
+
+    assert!(controller.is_window_visible());
+    assert_eq!(controller.active_fps_cap(), Some(144));
+
+    let hide_effects = controller.handle_tray_action(TrayAction::Hide);
+    assert!(!controller.is_window_visible());
+    assert_eq!(controller.active_fps_cap(), Some(5));
+    assert!(hide_effects.contains(&PlatformEffect::SetWindowVisible(false)));
+    assert!(hide_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
+        window_visible: false,
+        audio_muted: false,
+    })));
+    assert!(
+        hide_effects
+            .iter()
+            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"active_fps_cap\":5")))
+    );
+
+    let show_effects = controller.handle_tray_action(TrayAction::Show);
+    assert!(controller.is_window_visible());
+    assert_eq!(controller.active_fps_cap(), Some(144));
+    assert!(show_effects.contains(&PlatformEffect::SetWindowVisible(true)));
+    assert!(show_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
+        window_visible: true,
+        audio_muted: false,
+    })));
+    assert!(
+        show_effects
+            .iter()
+            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"active_fps_cap\":144")))
+    );
+
+    let toggle_hide_effects = controller.handle_tray_action(TrayAction::ToggleWindowVisibility);
+    assert!(!controller.is_window_visible());
+    assert_eq!(controller.active_fps_cap(), Some(5));
+    assert!(toggle_hide_effects.contains(&PlatformEffect::SetWindowVisible(false)));
+
+    let toggle_show_effects = controller.handle_tray_action(TrayAction::ToggleWindowVisibility);
+    assert!(controller.is_window_visible());
+    assert_eq!(controller.active_fps_cap(), Some(144));
+    assert!(toggle_show_effects.contains(&PlatformEffect::SetWindowVisible(true)));
+
+    let quit_effects = controller.handle_tray_action(TrayAction::Quit);
+    assert_eq!(quit_effects, vec![PlatformEffect::ExitApp]);
+}
+
+#[test]
+fn close_requested_exits_when_close_to_tray_disabled_and_hides_to_tray_when_enabled() {
+    let dir = tempdir().expect("tempdir");
+    let mut controller = ClientController::load_or_default(dir.path());
+
+    assert!(!controller.settings().close_to_tray);
+    assert_eq!(
+        controller.handle_close_requested(),
+        vec![PlatformEffect::ExitApp]
+    );
+    assert!(controller.is_window_visible());
+
+    let mut settings = controller.settings().clone();
+    settings.close_to_tray = true;
+    settings.foreground_fps_cap = ForegroundFpsCap::Fps60;
+    settings.background_fps_cap = BackgroundFpsCap::Fps0;
+    controller.update_settings(settings).expect("save settings");
+
+    assert_eq!(controller.active_fps_cap(), Some(60));
+
+    let close_effects = controller.handle_close_requested();
+    assert!(!controller.is_window_visible());
+    assert_eq!(controller.active_fps_cap(), Some(0));
+    assert!(!close_effects.contains(&PlatformEffect::ExitApp));
+    assert!(close_effects.contains(&PlatformEffect::SetWindowVisible(false)));
+    assert!(close_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
+        window_visible: false,
+        audio_muted: false,
+    })));
+    assert!(
+        close_effects
+            .iter()
+            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"active_fps_cap\":0") && script.contains("\"window_visible\":false")))
+    );
+}
+
+#[test]
+fn toggles_audio_mute_from_tray_and_ipc_persists_state_syncs_tray_menu_and_injects_audio_interceptor() {
+    let dir = tempdir().expect("tempdir");
+    let mut controller = ClientController::load_or_default(dir.path());
+
+    assert!(!controller.settings().audio_muted);
+    let init_script = controller.initialization_script();
+    assert!(init_script.contains("AudioContext"));
+    assert!(init_script.contains("webkitAudioContext"));
+    assert!(init_script.contains("HTMLMediaElement"));
+
+    // Toggle mute on via system tray action
+    let mute_effects = controller.handle_tray_action(TrayAction::ToggleMute);
+    assert!(controller.settings().audio_muted);
+    assert!(mute_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
+        window_visible: true,
+        audio_muted: true,
+    })));
+    assert!(
+        mute_effects
+            .iter()
+            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"audio_muted\":true")))
+    );
+
+    // Verify persistence on disk
+    let reloaded = ClientController::load_or_default(dir.path());
+    assert!(reloaded.settings().audio_muted);
+
+    // Toggle mute off via IPC message
+    let unmute_effects = controller.handle_ipc_message(r#"{"type":"toggle_audio_mute"}"#);
+    assert!(!controller.settings().audio_muted);
+    assert!(unmute_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
+        window_visible: true,
+        audio_muted: false,
+    })));
+    assert!(
+        unmute_effects
+            .iter()
+            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"audio_muted\":false")))
+    );
+
+    // Updating settings via IPC also synchronizes tray menu when audio_muted changes
+    let mut updated_settings = controller.settings().clone();
+    updated_settings.audio_muted = true;
+    let ipc_payload = serde_json::json!({
+        "type": "update_settings",
+        "settings": updated_settings,
+    })
+    .to_string();
+    let settings_effects = controller.handle_ipc_message(&ipc_payload);
+    assert!(controller.settings().audio_muted);
+    assert!(settings_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
+        window_visible: true,
+        audio_muted: true,
+    })));
+}
+
+
+
 
 
 

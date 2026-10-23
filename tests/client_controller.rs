@@ -1392,15 +1392,17 @@ console.log(JSON.stringify(ipcMessages));
 }
 
 #[test]
-fn ensures_fontconfig_hintnone_and_mounts_webview_compat_style_for_fonts_and_select_contrast() {
+fn ensures_fontconfig_hintslight_and_mounts_webview_compat_style_for_fonts_and_select_contrast() {
     let dir = tempdir().expect("tempdir");
     let controller = ClientController::load_or_default(dir.path());
 
     let fonts_conf = controller.ensure_fontconfig_file().expect("fonts.conf");
     assert!(fonts_conf.exists());
     let xml = std::fs::read_to_string(&fonts_conf).expect("read fonts.conf");
-    assert!(xml.contains("<const>hintnone</const>"));
-    assert!(xml.contains("<edit name=\"hinting\" mode=\"assign\"><bool>false</bool></edit>"));
+    assert!(xml.contains("<const>hintslight</const>"));
+    assert!(xml.contains("<edit name=\"hinting\" mode=\"assign\"><bool>true</bool></edit>"));
+    assert!(xml.contains("<edit name=\"autohint\" mode=\"assign\"><bool>false</bool></edit>"));
+    assert!(xml.contains("<edit name=\"rgba\" mode=\"assign\"><const>none</const></edit>"));
 
     let init_script = controller.initialization_script();
     let test_body = r#"
@@ -1414,6 +1416,9 @@ if (!css.includes('color-scheme: light !important')) {
 }
 if (!css.includes('font-synthesis: none !important')) {
     throw new Error('Expected font-synthesis: none !important for Monocraft');
+}
+if (!css.includes('.painel, .vidro, #dicabox') || !css.includes('-webkit-font-smoothing: antialiased !important')) {
+    throw new Error('Expected .painel, .vidro, #dicabox anti-aliasing override for WebKitGTK');
 }
 if (!css.includes('select option') || !css.includes('appearance: none !important')) {
     throw new Error('Expected select and select option contrast rules');

@@ -448,11 +448,13 @@ impl ClientController {
 <fontconfig>
   <include ignore_missing="yes">/etc/fonts/fonts.conf</include>
   <match target="font">
-    <edit name="hinting" mode="assign"><bool>false</bool></edit>
-    <edit name="hintstyle" mode="assign"><const>hintnone</const></edit>
+    <edit name="hinting" mode="assign"><bool>true</bool></edit>
+    <edit name="hintstyle" mode="assign"><const>hintslight</const></edit>
     <edit name="autohint" mode="assign"><bool>false</bool></edit>
     <edit name="antialias" mode="assign"><bool>true</bool></edit>
     <edit name="rgba" mode="assign"><const>none</const></edit>
+    <edit name="lcdfilter" mode="assign"><const>lcdnone</const></edit>
+    <edit name="embeddedbitmap" mode="assign"><bool>false</bool></edit>
   </match>
 </fontconfig>
 "#;

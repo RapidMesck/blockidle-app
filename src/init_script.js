@@ -239,15 +239,19 @@
             compatStyle = document.createElement('style');
             compatStyle.id = 'blockidle-webview-compat-style';
             compatStyle.textContent =
-                ':root, html, body { color-scheme: light !important; font-synthesis: none !important; -webkit-font-smoothing: antialiased; } ' +
+                ':root, html, body { color-scheme: light !important; font-synthesis: none !important; -webkit-font-smoothing: antialiased !important; -moz-osx-font-smoothing: grayscale !important; font-smooth: always !important; text-rendering: auto !important; } ' +
                 '@font-face { font-family: "Monocraft"; src: url("/lib/Monocraft.ttf") format("truetype"); font-weight: 100 900; font-style: normal; } ' +
-                '*, *::before, *::after { font-synthesis: none !important; font-variant-ligatures: none !important; font-feature-settings: "liga" 0, "calt" 0 !important; } ' +
-                'button, input, select, textarea, option, optgroup { font-family: "Monocraft", monospace; font-synthesis: none !important; } ' +
-                'select { -webkit-appearance: none !important; appearance: none !important; color-scheme: dark !important; ' +
+                '*, *::before, *::after, .painel, .vidro, #dicabox, .painel *, .vidro *, #dicabox * { ' +
+                '-webkit-font-smoothing: antialiased !important; -moz-osx-font-smoothing: grayscale !important; font-smooth: always !important; text-rendering: auto !important; ' +
+                'font-synthesis: none !important; font-variant-ligatures: none !important; font-feature-settings: "liga" 0, "calt" 0 !important; } ' +
+                'button, input, select, textarea, option, optgroup { font-family: "Monocraft", monospace; font-synthesis: none !important; -webkit-font-smoothing: antialiased !important; } ' +
+                'select { -webkit-appearance: none !important; appearance: none !important; color-scheme: dark !important; border-radius: 0 !important; ' +
                 'background-color: #2b2b2b; color: #ffffff; ' +
                 'background-image: url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'10\' height=\'6\' viewBox=\'0 0 10 6\'%3E%3Cpath fill=\'%23ffffff\' d=\'M0 0h10L5 6z\'/%3E%3C/svg%3E") !important; ' +
                 'background-repeat: no-repeat !important; background-position: right 6px center !important; background-size: 8px 5px !important; padding-right: 20px !important; } ' +
                 'select option, select optgroup { background-color: #2b2b2b !important; color: #ffffff !important; }';
+        }
+        if (compatStyle.parentNode !== styleHost || styleHost.lastChild !== compatStyle) {
             styleHost.appendChild(compatStyle);
         }
     }
@@ -981,5 +985,10 @@
     } else {
         ensureOverlayMounted();
         sendIpc({ type: 'client_ready' });
+    }
+    if (typeof window.addEventListener === 'function') {
+        window.addEventListener('load', function() {
+            ensurePageCompatStyleMounted();
+        }, { once: true });
     }
 })();

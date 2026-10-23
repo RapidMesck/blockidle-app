@@ -231,15 +231,93 @@ fn build_game_view(
     }
 }
 
+#[cfg(target_os = "linux")]
+mod linux_runtime {
+    use blockidle_app::ClientController;
+    use std::ffi::{c_char, c_void};
+
+    const G_LOG_FLAG_RECURSION: u32 = 1 << 0;
+    const G_LOG_FLAG_FATAL: u32 = 1 << 1;
+    const G_LOG_LEVEL_WARNING: u32 = 1 << 4;
+
+    unsafe extern "C" {
+        fn g_log_set_handler(
+            log_domain: *const c_char,
+            log_levels: u32,
+            log_func: Option<
+                unsafe extern "C" fn(*const c_char, u32, *const c_char, *mut c_void),
+            >,
+            user_data: *mut c_void,
+        ) -> u32;
+        fn gtk_settings_get_default() -> *mut c_void;
+        fn g_object_set(object: *mut c_void, first_property_name: *const c_char, ...);
+    }
+
+    unsafe extern "C" fn ignore_ayatana_warning(
+        _domain: *const c_char,
+        _level: u32,
+        _message: *const c_char,
+        _user_data: *mut c_void,
+    ) {
+    }
+
+    pub fn configure_pre_init(controller: &ClientController) {
+        // Force standard light GTK3 theme for WebKitGTK widget painting so dark desktop themes
+        // (such as Breeze Dark + colorreload-gtk-module) do not force dark backgrounds or white text
+        // onto web form controls (<select>, <option>, <input>).
+        // SAFETY: Called on the main thread before GTK/WebKit or any worker threads are spawned.
+        unsafe {
+            std::env::set_var("GTK_THEME", "Adwaita:light");
+            std::env::set_var("GTK_MODULES", "");
+            if std::env::var_os("FONTCONFIG_FILE").is_none()
+                && let Ok(fonts_conf) = controller.ensure_fontconfig_file()
+            {
+                std::env::set_var("FONTCONFIG_FILE", fonts_conf);
+            }
+            g_log_set_handler(
+                c"libayatana-appindicator".as_ptr(),
+                G_LOG_LEVEL_WARNING | G_LOG_FLAG_RECURSION | G_LOG_FLAG_FATAL,
+                Some(ignore_ayatana_warning),
+                std::ptr::null_mut(),
+            );
+        }
+    }
+
+    pub fn apply_gtk_settings() {
+        unsafe {
+            let settings = gtk_settings_get_default();
+            if !settings.is_null() {
+                g_object_set(
+                    settings,
+                    c"gtk-application-prefer-dark-theme".as_ptr(),
+                    0i32,
+                    c"gtk-theme-name".as_ptr(),
+                    c"Adwaita".as_ptr(),
+                    c"gtk-xft-hinting".as_ptr(),
+                    0i32,
+                    c"gtk-xft-hintstyle".as_ptr(),
+                    c"hintnone".as_ptr(),
+                    c"gtk-xft-antialias".as_ptr(),
+                    1i32,
+                    c"gtk-xft-rgba".as_ptr(),
+                    c"none".as_ptr(),
+                    std::ptr::null::<c_char>(),
+                );
+            }
+        }
+    }
+}
+
 fn main() -> wry::Result<()> {
     let paths = resolve_paths();
     let _ = std::fs::create_dir_all(&paths.config_dir);
     let _ = std::fs::create_dir_all(&paths.data_dir);
 
-    let controller = Arc::new(Mutex::new(ClientController::with_paths(
-        &paths.config_dir,
-        &paths.data_dir,
-    )));
+    let controller_instance = ClientController::with_paths(&paths.config_dir, &paths.data_dir);
+    #[cfg(target_os = "linux")]
+    linux_runtime::configure_pre_init(&controller_instance);
+
+    let controller = Arc::new(Mutex::new(controller_instance));
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -267,10 +345,16 @@ fn main() -> wry::Result<()> {
         .build(&event_loop)
         .expect("failed to build Client Shell window");
 
+    #[cfg(target_os = "linux")]
+    linux_runtime::apply_gtk_settings();
+
     let tray = build_system_tray(initial_tray_state, proxy.clone());
 
     let mut web_context = WebContext::new(Some(data_dir));
     let webview = build_game_view(&window, &mut web_context, &controller, proxy)?;
+
+    #[cfg(target_os = "linux")]
+    linux_runtime::apply_gtk_settings();
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;

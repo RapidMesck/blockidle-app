@@ -227,7 +227,33 @@
         }
     }
 
+    function ensurePageCompatStyleMounted() {
+        const styleHost = document.head || document.documentElement || document.body;
+        if (!styleHost) {
+            return;
+        }
+        let compatStyle = document.getElementById
+            ? document.getElementById('blockidle-webview-compat-style')
+            : null;
+        if (!compatStyle) {
+            compatStyle = document.createElement('style');
+            compatStyle.id = 'blockidle-webview-compat-style';
+            compatStyle.textContent =
+                ':root, html, body { color-scheme: light !important; font-synthesis: none !important; -webkit-font-smoothing: antialiased; } ' +
+                '@font-face { font-family: "Monocraft"; src: url("/lib/Monocraft.ttf") format("truetype"); font-weight: 100 900; font-style: normal; } ' +
+                '*, *::before, *::after { font-synthesis: none !important; font-variant-ligatures: none !important; font-feature-settings: "liga" 0, "calt" 0 !important; } ' +
+                'button, input, select, textarea, option, optgroup { font-family: "Monocraft", monospace; font-synthesis: none !important; } ' +
+                'select { -webkit-appearance: none !important; appearance: none !important; color-scheme: dark !important; ' +
+                'background-color: #2b2b2b; color: #ffffff; ' +
+                'background-image: url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'10\' height=\'6\' viewBox=\'0 0 10 6\'%3E%3Cpath fill=\'%23ffffff\' d=\'M0 0h10L5 6z\'/%3E%3C/svg%3E") !important; ' +
+                'background-repeat: no-repeat !important; background-position: right 6px center !important; background-size: 8px 5px !important; padding-right: 20px !important; } ' +
+                'select option, select optgroup { background-color: #2b2b2b !important; color: #ffffff !important; }';
+            styleHost.appendChild(compatStyle);
+        }
+    }
+
     function ensureOverlayMounted() {
+        ensurePageCompatStyleMounted();
         if (hudElement && settingsOverlayElement) {
             return;
         }
@@ -265,7 +291,11 @@
                 'background: #131722; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 12px; padding: 20px; ' +
                 'box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6); } ' +
                 '.bi-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.06); } ' +
-                '.bi-btn, select { background: #1f2637; color: #e6edf3; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px; }';
+                '.bi-btn, select { background-color: #1f2637; color: #e6edf3; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px; } ' +
+                'select { -webkit-appearance: none; appearance: none; color-scheme: dark; ' +
+                'background-image: url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'10\' height=\'6\' viewBox=\'0 0 10 6\'%3E%3Cpath fill=\'%23e6edf3\' d=\'M0 0h10L5 6z\'/%3E%3C/svg%3E"); ' +
+                'background-repeat: no-repeat; background-position: right 8px center; background-size: 8px 5px; padding-right: 26px; } ' +
+                'select option { background-color: #1f2637; color: #e6edf3; }';
             shadow.appendChild(styleEl);
         }
         let hud = shadow.getElementById ? shadow.getElementById('blockidle-fps-hud') : null;
@@ -929,6 +959,7 @@
     };
 
     syncAudioMuteState();
+    ensurePageCompatStyleMounted();
 
     window.__BLOCKIDLE_CLIENT__ = {
         getState: function() { return window.__BLOCKIDLE_CLIENT_STATE__; },

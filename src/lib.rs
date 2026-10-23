@@ -436,6 +436,30 @@ impl ClientController {
         &self.data_dir
     }
 
+    pub fn ensure_fontconfig_file(&self) -> io::Result<PathBuf> {
+        let config_dir = self
+            .config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(config_dir)?;
+        let fonts_conf_path = config_dir.join("fonts.conf");
+        let xml = r#"<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>
+  <match target="font">
+    <edit name="hinting" mode="assign"><bool>false</bool></edit>
+    <edit name="hintstyle" mode="assign"><const>hintnone</const></edit>
+    <edit name="autohint" mode="assign"><bool>false</bool></edit>
+    <edit name="antialias" mode="assign"><bool>true</bool></edit>
+    <edit name="rgba" mode="assign"><const>none</const></edit>
+  </match>
+</fontconfig>
+"#;
+        fs::write(&fonts_conf_path, xml)?;
+        Ok(fonts_conf_path)
+    }
+
     pub fn game_view_url(&self) -> &'static str {
         GAME_VIEW_INITIAL_URL
     }

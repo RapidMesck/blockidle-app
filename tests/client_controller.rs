@@ -1390,3 +1390,37 @@ console.log(JSON.stringify(ipcMessages));
     assert!(controller.settings().fullscreen);
     assert_eq!(controller.settings().keybindings, Keybindings::default());
 }
+
+#[test]
+fn ensures_fontconfig_hintnone_and_mounts_webview_compat_style_for_fonts_and_select_contrast() {
+    let dir = tempdir().expect("tempdir");
+    let controller = ClientController::load_or_default(dir.path());
+
+    let fonts_conf = controller.ensure_fontconfig_file().expect("fonts.conf");
+    assert!(fonts_conf.exists());
+    let xml = std::fs::read_to_string(&fonts_conf).expect("read fonts.conf");
+    assert!(xml.contains("<const>hintnone</const>"));
+    assert!(xml.contains("<edit name=\"hinting\" mode=\"assign\"><bool>false</bool></edit>"));
+
+    let init_script = controller.initialization_script();
+    let test_body = r#"
+const compatStyle = document.getElementById('blockidle-webview-compat-style');
+if (!compatStyle) {
+    throw new Error('Expected #blockidle-webview-compat-style to be mounted');
+}
+const css = compatStyle.textContent;
+if (!css.includes('color-scheme: light !important')) {
+    throw new Error('Expected root color-scheme: light !important');
+}
+if (!css.includes('font-synthesis: none !important')) {
+    throw new Error('Expected font-synthesis: none !important for Monocraft');
+}
+if (!css.includes('select option') || !css.includes('appearance: none !important')) {
+    throw new Error('Expected select and select option contrast rules');
+}
+console.log('COMPAT_STYLE_OK');
+"#;
+    let stdout = run_node_with_dom("compat-style", &init_script, test_body);
+    assert!(stdout.contains("COMPAT_STYLE_OK"));
+}
+

@@ -1,0 +1,3 @@
+# In-Page Shadow DOM for Settings Overlay and FPS HUD
+
+Displaying a transparent child window or secondary WebView on top of a hardware-accelerated WebGL surface causes positioning, focus, and fullscreen compositing issues on Linux (Wayland) and Windows. Instead, the **Settings Overlay** and **FPS HUD** are injected into the **Game View** via `wry`'s native initialization script inside an isolated closed/open Shadow DOM container above `<canvas id="cena">`, communicating state changes to the Rust host via `window.ipc.postMessage`. This guarantees zero-latency rendering in both windowed and fullscreen modes without CSS collisions with the game page.

@@ -1,6 +1,8 @@
 use blockidle_app::{
     BackgroundFpsCap, ClientController, ClientSettings, ForegroundFpsCap, Keybindings,
-    NavigationDecision, PlatformEffect, TrayAction, TrayMenuState,
+    NavigationDecision, PlatformEffect, TargetPlatform, TrayAction, TrayMenuState,
+    UpdateCheckResult, UpdateState, calculate_sha256, evaluate_update, parse_release_info,
+    select_release_asset, stage_and_replace_executable,
 };
 use tempfile::tempdir;
 
@@ -154,8 +156,17 @@ const window = {
         const capture = typeof options === 'boolean' ? options : !!(options && options.capture);
         winListeners.push({ type, listener, capture });
     },
-    dispatchEvent: () => true,
+    dispatchEvent(ev) {
+        const type = ev && ev.type;
+        for (const entry of winListeners) {
+            if (entry.type === type) {
+                entry.listener.call(window, ev);
+            }
+        }
+        return true;
+    },
     CustomEvent: class CustomEvent { constructor(type, opts) { this.type = type; this.detail = opts ? opts.detail : undefined; } },
+    Event: typeof Event !== 'undefined' ? Event : class Event { constructor(type) { this.type = type; } },
     ipc: {
         postMessage(raw) {
             ipcMessages.push(JSON.parse(raw));
@@ -171,6 +182,7 @@ globalThis.cancelAnimationFrame = (...args) => window.cancelAnimationFrame(...ar
 globalThis.setTimeout = window.setTimeout;
 globalThis.clearTimeout = window.clearTimeout;
 globalThis.CustomEvent = window.CustomEvent;
+globalThis.Event = window.Event;
 
 function stepNativeFrame(dtMs) {
     now += dtMs;
@@ -310,8 +322,11 @@ fn persists_client_settings_to_disk_and_restores_on_reload() {
 fn falls_back_to_defaults_when_settings_file_is_corrupted_and_provides_persistent_data_dir() {
     let config_dir = tempdir().expect("config tempdir");
     let data_dir = tempdir().expect("data tempdir");
-    std::fs::write(config_dir.path().join("settings.json"), "{ corrupted json !!!")
-        .expect("write corrupted file");
+    std::fs::write(
+        config_dir.path().join("settings.json"),
+        "{ corrupted json !!!",
+    )
+    .expect("write corrupted file");
 
     let controller = ClientController::with_paths(config_dir.path(), data_dir.path());
     assert_eq!(controller.settings(), &ClientSettings::default());
@@ -327,7 +342,8 @@ fn falls_back_to_defaults_when_settings_file_is_corrupted_and_provides_persisten
 }
 
 #[test]
-fn falls_back_to_defaults_and_persists_clean_settings_when_settings_json_has_invalid_or_duplicate_keybindings() {
+fn falls_back_to_defaults_and_persists_clean_settings_when_settings_json_has_invalid_or_duplicate_keybindings()
+ {
     let dir = tempdir().expect("tempdir");
     let settings_path = dir.path().join("settings.json");
 
@@ -457,7 +473,10 @@ fn generates_initialization_script_and_processes_ipc_messages_from_game_view() {
     .to_string();
 
     let effects = controller.handle_ipc_message(&ipc_payload);
-    assert_eq!(controller.settings().foreground_fps_cap, ForegroundFpsCap::Fps60);
+    assert_eq!(
+        controller.settings().foreground_fps_cap,
+        ForegroundFpsCap::Fps60
+    );
     assert!(controller.settings().fullscreen);
     assert!(effects.contains(&PlatformEffect::SetFullscreen(true)));
     assert!(
@@ -467,7 +486,10 @@ fn generates_initialization_script_and_processes_ipc_messages_from_game_view() {
     );
 
     let reloaded = ClientController::load_or_default(dir.path());
-    assert_eq!(reloaded.settings().foreground_fps_cap, ForegroundFpsCap::Fps60);
+    assert_eq!(
+        reloaded.settings().foreground_fps_cap,
+        ForegroundFpsCap::Fps60
+    );
     assert!(reloaded.settings().fullscreen);
 }
 
@@ -496,14 +518,17 @@ fn persists_window_dimensions_on_resize_and_handles_window_lifecycle_events() {
 }
 
 #[test]
-fn tray_actions_hide_and_restore_window_switching_between_background_and_foreground_fps_caps_and_quit() {
+fn tray_actions_hide_and_restore_window_switching_between_background_and_foreground_fps_caps_and_quit()
+ {
     let dir = tempdir().expect("tempdir");
     let mut controller = ClientController::load_or_default(dir.path());
 
     let mut settings = controller.settings().clone();
     settings.foreground_fps_cap = ForegroundFpsCap::Fps144;
     settings.background_fps_cap = BackgroundFpsCap::Fps5;
-    controller.update_settings(settings).expect("update settings");
+    controller
+        .update_settings(settings)
+        .expect("update settings");
 
     assert!(controller.is_window_visible());
     assert_eq!(controller.effective_fps_cap(), Some(144));
@@ -512,10 +537,13 @@ fn tray_actions_hide_and_restore_window_switching_between_background_and_foregro
     assert!(!controller.is_window_visible());
     assert_eq!(controller.effective_fps_cap(), Some(5));
     assert!(hide_effects.contains(&PlatformEffect::SetWindowVisible(false)));
-    assert!(hide_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
-        window_visible: false,
-        audio_muted: false,
-    })));
+    assert!(
+        hide_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
+            window_visible: false,
+            audio_muted: false,
+            update_available: None,
+        }))
+    );
     assert!(
         hide_effects
             .iter()
@@ -526,10 +554,13 @@ fn tray_actions_hide_and_restore_window_switching_between_background_and_foregro
     assert!(controller.is_window_visible());
     assert_eq!(controller.effective_fps_cap(), Some(144));
     assert!(show_effects.contains(&PlatformEffect::SetWindowVisible(true)));
-    assert!(show_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
-        window_visible: true,
-        audio_muted: false,
-    })));
+    assert!(
+        show_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
+            window_visible: true,
+            audio_muted: false,
+            update_available: None,
+        }))
+    );
     assert!(
         show_effects
             .iter()
@@ -604,10 +635,13 @@ fn close_requested_exits_when_close_to_tray_disabled_and_hides_to_tray_when_enab
     assert_eq!(controller.effective_fps_cap(), Some(0));
     assert!(!close_effects.contains(&PlatformEffect::ExitApp));
     assert!(close_effects.contains(&PlatformEffect::SetWindowVisible(false)));
-    assert!(close_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
-        window_visible: false,
-        audio_muted: false,
-    })));
+    assert!(
+        close_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
+            window_visible: false,
+            audio_muted: false,
+            update_available: None,
+        }))
+    );
     assert!(
         close_effects
             .iter()
@@ -616,7 +650,8 @@ fn close_requested_exits_when_close_to_tray_disabled_and_hides_to_tray_when_enab
 }
 
 #[test]
-fn switches_effective_fps_cap_between_foreground_and_background_on_focus_and_minimize_transitions() {
+fn switches_effective_fps_cap_between_foreground_and_background_on_focus_and_minimize_transitions()
+{
     let dir = tempdir().expect("tempdir");
     let mut controller = ClientController::load_or_default(dir.path());
 
@@ -665,7 +700,9 @@ fn switches_effective_fps_cap_between_foreground_and_background_on_focus_and_min
             let mut settings = controller.settings().clone();
             settings.foreground_fps_cap = fg_preset;
             settings.background_fps_cap = bg_preset;
-            controller.update_settings(settings).expect("update settings");
+            controller
+                .update_settings(settings)
+                .expect("update settings");
 
             // While focused and not minimized -> foreground cap
             controller.handle_minimized_changed(false);
@@ -700,7 +737,9 @@ fn switches_effective_fps_cap_between_foreground_and_background_on_focus_and_min
     let mut settings = controller.settings().clone();
     settings.foreground_fps_cap = ForegroundFpsCap::Fps120;
     settings.background_fps_cap = BackgroundFpsCap::Fps0;
-    controller.update_settings(settings).expect("update settings");
+    controller
+        .update_settings(settings)
+        .expect("update settings");
     let zero_resize_effects = controller.handle_window_resized(0, 0);
     assert_eq!(controller.effective_fps_cap(), Some(0));
     assert_eq!(controller.settings().window_width, 1280);
@@ -729,7 +768,9 @@ fn initialization_script_enforces_raf_pacing_zero_fps_pause_and_flush_and_cancel
     let mut settings = controller.settings().clone();
     settings.foreground_fps_cap = ForegroundFpsCap::Fps60;
     settings.background_fps_cap = BackgroundFpsCap::Fps0;
-    controller.update_settings(settings).expect("update settings");
+    controller
+        .update_settings(settings)
+        .expect("update settings");
 
     let init_script = controller.initialization_script();
     let unfocus_sync_script = controller
@@ -826,7 +867,86 @@ console.log('RAF_TEST_OK');
 }
 
 #[test]
-fn toggles_audio_mute_from_tray_and_ipc_persists_state_syncs_tray_menu_and_injects_audio_interceptor() {
+fn initialization_script_shrinks_renderer_and_prunes_idle_memory_when_cap_is_zero() {
+    let dir = tempdir().expect("tempdir");
+    let mut controller = ClientController::load_or_default(dir.path());
+    let mut settings = controller.settings().clone();
+    settings.foreground_fps_cap = ForegroundFpsCap::Fps60;
+    settings.background_fps_cap = BackgroundFpsCap::Fps0;
+    controller
+        .update_settings(settings)
+        .expect("update settings");
+
+    let init_script = controller.initialization_script();
+    let tray_sync_script = controller
+        .hide_to_tray()
+        .into_iter()
+        .find_map(|e| match e {
+            PlatformEffect::SyncWebViewState(s) => Some(s),
+            _ => None,
+        })
+        .expect("tray sync script");
+    let restore_sync_script = controller
+        .restore_from_tray()
+        .into_iter()
+        .find_map(|e| match e {
+            PlatformEffect::SyncWebViewState(s) => Some(s),
+            _ => None,
+        })
+        .expect("restore sync script");
+
+    let test_body = format!(
+        r#"
+let lastSetSize = null;
+let resizeDispatched = false;
+window.__renderizador = {{
+    setSize(w, h, updateStyle) {{
+        lastSetSize = {{ w, h, updateStyle }};
+    }}
+}};
+window.__eventos = [];
+for (let i = 0; i < 250; i++) {{
+    window.__eventos.push({{ id: i }});
+}}
+window.addEventListener('resize', () => {{
+    resizeDispatched = true;
+}});
+
+// 1. Hide to tray at 0 FPS
+{tray_sync_script}
+
+if (!lastSetSize || lastSetSize.w !== 1 || lastSetSize.h !== 1 || lastSetSize.updateStyle !== false) {{
+    throw new Error('Expected __renderizador.setSize(1, 1, false) when cap is 0 FPS, got: ' + JSON.stringify(lastSetSize));
+}}
+if (!Array.isArray(window.__eventos) || window.__eventos.length !== 200) {{
+    throw new Error('Expected window.__eventos to be pruned to 200 items in idle, got: ' + window.__eventos.length);
+}}
+
+// 2. Queue multiple rAF callbacks while at 0 FPS
+for (let i = 0; i < 80; i++) {{
+    window.requestAnimationFrame(() => {{}});
+}}
+
+// 3. Restore from tray
+{restore_sync_script}
+
+if (!lastSetSize || lastSetSize.w !== 1280 || lastSetSize.h !== 720) {{
+    throw new Error('Expected __renderizador.setSize(1280, 720) on restore, got: ' + JSON.stringify(lastSetSize));
+}}
+if (!resizeDispatched) {{
+    throw new Error('Expected resize event dispatched on restore from 0 FPS');
+}}
+
+console.log('MEMORY_PRUNE_TEST_OK');
+"#
+    );
+
+    run_node_with_dom("memory_prune", &init_script, &test_body);
+}
+
+#[test]
+fn toggles_audio_mute_from_tray_and_ipc_persists_state_syncs_tray_menu_and_injects_audio_interceptor()
+ {
     let dir = tempdir().expect("tempdir");
     let mut controller = ClientController::load_or_default(dir.path());
 
@@ -839,10 +959,13 @@ fn toggles_audio_mute_from_tray_and_ipc_persists_state_syncs_tray_menu_and_injec
     // Toggle mute on via system tray action
     let mute_effects = controller.handle_tray_action(TrayAction::ToggleMute);
     assert!(controller.settings().audio_muted);
-    assert!(mute_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
-        window_visible: true,
-        audio_muted: true,
-    })));
+    assert!(
+        mute_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
+            window_visible: true,
+            audio_muted: true,
+            update_available: None,
+        }))
+    );
     assert!(
         mute_effects
             .iter()
@@ -856,10 +979,13 @@ fn toggles_audio_mute_from_tray_and_ipc_persists_state_syncs_tray_menu_and_injec
     // Toggle mute off via IPC message
     let unmute_effects = controller.handle_ipc_message(r#"{"type":"toggle_audio_mute"}"#);
     assert!(!controller.settings().audio_muted);
-    assert!(unmute_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
-        window_visible: true,
-        audio_muted: false,
-    })));
+    assert!(
+        unmute_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
+            window_visible: true,
+            audio_muted: false,
+            update_available: None,
+        }))
+    );
     assert!(
         unmute_effects
             .iter()
@@ -876,10 +1002,13 @@ fn toggles_audio_mute_from_tray_and_ipc_persists_state_syncs_tray_menu_and_injec
     .to_string();
     let settings_effects = controller.handle_ipc_message(&ipc_payload);
     assert!(controller.settings().audio_muted);
-    assert!(settings_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
-        window_visible: true,
-        audio_muted: true,
-    })));
+    assert!(
+        settings_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
+            window_visible: true,
+            audio_muted: true,
+            update_available: None,
+        }))
+    );
 }
 
 #[test]
@@ -942,7 +1071,8 @@ console.log('KEEP_AWAKE_OK');
 }
 
 #[test]
-fn initialization_script_renders_shadow_dom_fps_hud_with_pointer_events_none_and_respects_visibility_setting() {
+fn initialization_script_renders_shadow_dom_fps_hud_with_pointer_events_none_and_respects_visibility_setting()
+ {
     let dir = tempdir().expect("tempdir");
     let mut controller = ClientController::load_or_default(dir.path());
     assert!(!controller.settings().fps_hud_visible);
@@ -1079,9 +1209,9 @@ fn validates_normalizes_prevents_conflicts_and_restores_default_keybindings() {
         "Ctrl+Shift+H"
     );
     assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, PlatformEffect::SyncWebViewState(s) if s.contains("Ctrl+Shift+H")))
+        effects.iter().any(
+            |e| matches!(e, PlatformEffect::SyncWebViewState(s) if s.contains("Ctrl+Shift+H"))
+        )
     );
 
     // Updating via IPC also normalizes and prevents conflicts
@@ -1185,10 +1315,13 @@ fn dispatches_default_and_custom_keybindings_when_focused_and_closes_overlay_on_
     assert!(!controller.settings().audio_muted);
     let f10_effects = controller.trigger_keybinding("F10");
     assert!(controller.settings().audio_muted);
-    assert!(f10_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
-        window_visible: true,
-        audio_muted: true,
-    })));
+    assert!(
+        f10_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
+            window_visible: true,
+            audio_muted: true,
+            update_available: None,
+        }))
+    );
 
     // F11 toggles Fullscreen and persists
     assert!(!controller.settings().fullscreen);
@@ -1204,10 +1337,13 @@ fn dispatches_default_and_custom_keybindings_when_focused_and_closes_overlay_on_
     let custom_mute_effects =
         controller.handle_ipc_message(r#"{"type":"trigger_keybinding","shortcut":"ctrl+shift+m"}"#);
     assert!(!controller.settings().audio_muted);
-    assert!(custom_mute_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
-        window_visible: true,
-        audio_muted: false,
-    })));
+    assert!(
+        custom_mute_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
+            window_visible: true,
+            audio_muted: false,
+            update_available: None,
+        }))
+    );
 
     // F9 hides to system tray (which also unfocuses/hides the window)
     let f9_effects = controller.trigger_keybinding("F9");
@@ -1226,7 +1362,8 @@ fn dispatches_default_and_custom_keybindings_when_focused_and_closes_overlay_on_
 }
 
 #[test]
-fn initialization_script_renders_shadow_dom_settings_overlay_records_keybindings_and_consumes_keys_while_open() {
+fn initialization_script_renders_shadow_dom_settings_overlay_records_keybindings_and_consumes_keys_while_open()
+ {
     let dir = tempdir().expect("tempdir");
     let mut controller = ClientController::load_or_default(dir.path());
     let init_script = controller.initialization_script();
@@ -1429,8 +1566,14 @@ console.log(JSON.stringify(ipcMessages));
     }
 
     assert!(!controller.is_settings_overlay_open());
-    assert_eq!(controller.settings().foreground_fps_cap, ForegroundFpsCap::Fps144);
-    assert_eq!(controller.settings().background_fps_cap, BackgroundFpsCap::Fps0);
+    assert_eq!(
+        controller.settings().foreground_fps_cap,
+        ForegroundFpsCap::Fps144
+    );
+    assert_eq!(
+        controller.settings().background_fps_cap,
+        BackgroundFpsCap::Fps0
+    );
     assert!(controller.settings().fps_hud_visible);
     assert!(!controller.settings().keep_awake);
     assert!(controller.settings().close_to_tray);
@@ -1480,3 +1623,304 @@ console.log('COMPAT_STYLE_OK');
     assert!(stdout.contains("COMPAT_STYLE_OK"));
 }
 
+#[test]
+fn parses_github_release_and_selects_matching_platform_asset() {
+    let sample_release_json = r#"{
+        "tag_name": "v0.2.0",
+        "name": "Blockidle v0.2.0",
+        "html_url": "https://github.com/RapidMesck/blockidle-app/releases/tag/v0.2.0",
+        "body": "Fixed memory usage in tray",
+        "assets": [
+            {
+                "name": "blockidle-app-v0.2.0-windows-x86_64.exe",
+                "browser_download_url": "https://github.com/RapidMesck/blockidle-app/releases/download/v0.2.0/blockidle-app-v0.2.0-windows-x86_64.exe",
+                "size": 15000000
+            },
+            {
+                "name": "blockidle-app-v0.2.0-linux-x86_64.AppImage",
+                "browser_download_url": "https://github.com/RapidMesck/blockidle-app/releases/download/v0.2.0/blockidle-app-v0.2.0-linux-x86_64.AppImage",
+                "size": 25000000
+            },
+            {
+                "name": "blockidle-app-v0.2.0-linux-x86_64.tar.gz",
+                "browser_download_url": "https://github.com/RapidMesck/blockidle-app/releases/download/v0.2.0/blockidle-app-v0.2.0-linux-x86_64.tar.gz",
+                "size": 18000000
+            }
+        ]
+    }"#;
+
+    let release = parse_release_info(sample_release_json).expect("valid release json");
+    assert_eq!(release.tag_name, "v0.2.0");
+
+    // Windows matches .exe
+    let win_asset = select_release_asset(&release.assets, TargetPlatform::WindowsX86_64)
+        .expect("windows asset");
+    assert_eq!(win_asset.name, "blockidle-app-v0.2.0-windows-x86_64.exe");
+
+    // Linux AppImage matches .AppImage
+    let appimage_asset = select_release_asset(&release.assets, TargetPlatform::LinuxX86_64AppImage)
+        .expect("appimage asset");
+    assert_eq!(
+        appimage_asset.name,
+        "blockidle-app-v0.2.0-linux-x86_64.AppImage"
+    );
+
+    // Linux Standalone matches .tar.gz
+    let standalone_asset =
+        select_release_asset(&release.assets, TargetPlatform::LinuxX86_64Standalone)
+            .expect("standalone asset");
+    assert_eq!(
+        standalone_asset.name,
+        "blockidle-app-v0.2.0-linux-x86_64.tar.gz"
+    );
+
+    // Version evaluation: current 0.1.0 vs v0.2.0 -> UpdateAvailable
+    let decision = evaluate_update("0.1.0", &release, TargetPlatform::LinuxX86_64AppImage);
+    match decision {
+        UpdateCheckResult::UpdateAvailable {
+            latest_version,
+            asset_name,
+            asset_url,
+            ..
+        } => {
+            assert_eq!(latest_version, "v0.2.0");
+            assert_eq!(asset_name, "blockidle-app-v0.2.0-linux-x86_64.AppImage");
+            assert!(asset_url.contains("AppImage"));
+        }
+        _ => panic!("Expected update available, got: {:?}", decision),
+    }
+
+    // Version evaluation: current 0.2.0 vs v0.2.0 -> UpToDate
+    let up_to_date = evaluate_update("0.2.0", &release, TargetPlatform::LinuxX86_64AppImage);
+    assert_eq!(up_to_date, UpdateCheckResult::UpToDate);
+
+    // Version evaluation: current 0.3.0 vs v0.2.0 -> UpToDate
+    let ahead = evaluate_update("0.3.0", &release, TargetPlatform::LinuxX86_64AppImage);
+    assert_eq!(ahead, UpdateCheckResult::UpToDate);
+}
+
+#[test]
+fn controller_handles_update_ipc_and_state_transitions_for_tray_and_overlay() {
+    let dir = tempdir().expect("tempdir");
+    let mut controller = ClientController::load_or_default(dir.path());
+
+    // Initially update status is Idle and tray menu has no update banner
+    assert_eq!(controller.update_state(), &UpdateState::Idle);
+    assert_eq!(controller.tray_menu_state().update_available, None);
+
+    // 1. Game View / Overlay requests CheckForUpdates via IPC
+    let effects = controller.handle_ipc_message(r#"{"type":"check_for_updates"}"#);
+    assert!(effects.contains(&PlatformEffect::TriggerUpdateCheck));
+
+    // 2. An update check returns UpdateAvailable
+    let available_result = UpdateCheckResult::UpdateAvailable {
+        latest_version: "v0.2.0".to_string(),
+        release_name: "Blockidle v0.2.0".to_string(),
+        release_notes: "Improvements".to_string(),
+        release_url: "https://github.com/RapidMesck/blockidle-app/releases/tag/v0.2.0".to_string(),
+        asset_name: "blockidle-app-v0.2.0-linux-x86_64.AppImage".to_string(),
+        asset_url: "https://github.com/RapidMesck/blockidle-app/releases/download/v0.2.0/blockidle-app-v0.2.0-linux-x86_64.AppImage".to_string(),
+        asset_size: 25000000,
+    };
+    let effects = controller.apply_update_check_result(&available_result);
+    assert_eq!(
+        controller.tray_menu_state().update_available,
+        Some("v0.2.0".to_string())
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, PlatformEffect::UpdateTrayMenu(_)))
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, PlatformEffect::SyncWebViewState(_)))
+    );
+
+    // 3. Game View / Overlay starts update download
+    let start_effects = controller.handle_ipc_message(
+        r#"{"type":"start_update","asset_url":"https://github.com/example/asset.AppImage","asset_name":"asset.AppImage"}"#,
+    );
+    assert!(
+        start_effects.contains(&PlatformEffect::TriggerUpdateDownload {
+            asset_url: "https://github.com/example/asset.AppImage".to_string(),
+            asset_name: "asset.AppImage".to_string(),
+        })
+    );
+
+    // 4. Progress updates
+    let progress_effects = controller.apply_update_progress(5000000, 10000000);
+    assert!(
+        progress_effects
+            .iter()
+            .any(|e| matches!(e, PlatformEffect::SyncWebViewState(_)))
+    );
+    match controller.update_state() {
+        UpdateState::Downloading { downloaded, total } => {
+            assert_eq!(*downloaded, 5000000);
+            assert_eq!(*total, 10000000);
+        }
+        _ => panic!("Expected downloading state"),
+    }
+
+    // 5. Update ready to restart
+    let ready_effects = controller.apply_update_ready();
+    assert_eq!(controller.update_state(), &UpdateState::ReadyToRestart);
+    assert!(
+        ready_effects
+            .iter()
+            .any(|e| matches!(e, PlatformEffect::SyncWebViewState(_)))
+    );
+
+    // 6. User clicks Restart
+    let restart_effects = controller.handle_ipc_message(r#"{"type":"relaunch_app"}"#);
+    assert!(restart_effects.contains(&PlatformEffect::RelaunchApp));
+}
+
+#[test]
+fn stage_and_replace_executable_validates_sha256_and_replaces_atomically() {
+    let dir = tempdir().expect("tempdir");
+    let target_appimage = dir.path().join("Blockidle.AppImage");
+    std::fs::write(&target_appimage, b"v1-old-payload").expect("write old payload");
+
+    let new_payload = b"v2-new-payload-appimage";
+    let valid_sha256 = calculate_sha256(new_payload);
+
+    // 1. Checksum mismatch should abort without touching the target file
+    let bad_res = stage_and_replace_executable(
+        &target_appimage,
+        new_payload,
+        Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        true,
+    );
+    assert!(bad_res.is_err());
+    let current_content = std::fs::read(&target_appimage).expect("read file");
+    assert_eq!(current_content, b"v1-old-payload");
+
+    // 2. Valid checksum replaces atomically
+    let good_res =
+        stage_and_replace_executable(&target_appimage, new_payload, Some(&valid_sha256), true);
+    assert!(good_res.is_ok());
+    let updated_content = std::fs::read(&target_appimage).expect("read updated file");
+    assert_eq!(updated_content, new_payload);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::metadata(&target_appimage)
+            .expect("metadata")
+            .permissions();
+        assert_eq!(perms.mode() & 0o111, 0o111, "file should be executable");
+    }
+}
+
+#[test]
+fn initialization_script_renders_update_section_and_dispatches_update_ipc() {
+    let dir = tempdir().expect("tempdir");
+    let controller = ClientController::load_or_default(dir.path());
+    let init_script = controller.initialization_script();
+
+    let test_body = r#"
+const host = document.getElementById('blockidle-client-overlay-host');
+const shadow = host.shadowRoot;
+const updateBox = shadow.getElementById('blockidle-update-box');
+if (!updateBox) {
+    throw new Error('Expected #blockidle-update-box in Settings Overlay');
+}
+const checkBtn = shadow.getElementById('blockidle-check-update-btn');
+if (!checkBtn) {
+    throw new Error('Expected #blockidle-check-update-btn');
+}
+
+// 1. Click Check for Updates
+checkBtn.click();
+const checkIpc = ipcMessages.find(m => m.type === 'check_for_updates');
+if (!checkIpc) {
+    throw new Error('Expected check_for_updates IPC message on button click');
+}
+
+// 2. Receive state with UpdateAvailable
+const availableState = Object.assign({}, window.__BLOCKIDLE_CLIENT_STATE__, {
+    settings_overlay_open: true,
+    update_state: {
+        status: 'available',
+        latest_version: 'v0.2.0',
+        release_name: 'v0.2.0',
+        release_notes: 'Notes',
+        release_url: 'https://github.com/...',
+        asset_name: 'blockidle-app-v0.2.0-linux-x86_64.AppImage',
+        asset_url: 'https://github.com/download/appimage',
+        asset_size: 20000000
+    }
+});
+window.__blockidleApplyState(availableState);
+
+const startBtn = shadow.getElementById('blockidle-start-update-btn');
+if (!startBtn || startBtn.style.display === 'none') {
+    throw new Error('Expected visible #blockidle-start-update-btn when update is available');
+}
+startBtn.click();
+const startIpc = ipcMessages.find(m => m.type === 'start_update');
+if (!startIpc || startIpc.asset_name !== 'blockidle-app-v0.2.0-linux-x86_64.AppImage') {
+    throw new Error('Expected start_update IPC with asset_name');
+}
+
+// 3. Receive state with ReadyToRestart
+const readyState = Object.assign({}, window.__BLOCKIDLE_CLIENT_STATE__, {
+    settings_overlay_open: true,
+    update_state: {
+        status: 'ready_to_restart'
+    }
+});
+window.__blockidleApplyState(readyState);
+
+const restartBtn = shadow.getElementById('blockidle-relaunch-btn');
+if (!restartBtn || restartBtn.style.display === 'none') {
+    throw new Error('Expected visible #blockidle-relaunch-btn when update is ready to restart');
+}
+restartBtn.click();
+const relaunchIpc = ipcMessages.find(m => m.type === 'relaunch_app');
+if (!relaunchIpc) {
+    throw new Error('Expected relaunch_app IPC message on click');
+}
+
+console.log('UPDATE_UI_OK');
+"#;
+
+    let stdout = run_node_with_dom("update_ui", &init_script, test_body);
+    assert!(stdout.contains("UPDATE_UI_OK"));
+}
+
+#[test]
+fn resolves_target_executable_detects_appimage_env_or_falls_back_to_current_exe() {
+    use blockidle_app::{resolve_target_executable, resolve_target_executable_with};
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    // 1. With APPIMAGE environment variable provided
+    let mock_appimage = "/opt/games/Blockidle-x86_64.AppImage";
+    let (target, is_appimage) =
+        resolve_target_executable_with(|| Some(OsString::from(mock_appimage)))
+            .expect("resolve target");
+
+    if cfg!(target_os = "linux") {
+        assert_eq!(target, PathBuf::from(mock_appimage));
+        assert!(is_appimage);
+    } else {
+        assert!(!is_appimage);
+    }
+
+    // 2. Without APPIMAGE environment variable
+    let (target_no_appimage, is_appimage_no) =
+        resolve_target_executable_with(|| None).expect("resolve target no appimage");
+    assert_eq!(
+        target_no_appimage,
+        std::env::current_exe().expect("current exe")
+    );
+    assert!(!is_appimage_no);
+
+    // 3. Default resolution works
+    let (default_target, _) = resolve_target_executable().expect("default resolution");
+    assert!(!default_target.as_os_str().is_empty());
+}

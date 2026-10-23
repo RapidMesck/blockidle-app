@@ -39,3 +39,11 @@ _Avoid_: Background exit, minimize on close
 **Keybinding**:
 A user-configurable keyboard shortcut intercepted by the Client Shell to trigger client actions (such as fullscreen, reload, mute, tray hide, or toggling the Settings Overlay).
 _Avoid_: Hotkey, macro
+
+**Auto-Updater**:
+The background client subsystem that checks GitHub Releases for new client versions, downloads the platform-appropriate binary or AppImage, and verifies integrity before applying.
+_Avoid_: Updater wizard, launcher updater
+
+**In-App Replacement**:
+The atomic file replacement mechanism that updates the executing binary (`self_replace` on Windows and standalone Linux, atomic `rename(2)` on `$APPIMAGE` for Linux AppImages) without requiring external installers or browser redirects.
+_Avoid_: External installer, update script

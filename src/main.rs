@@ -1,8 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use blockidle_app::{
-    AppPaths, ClientController, NavigationDecision, PlatformEffect, TrayAction, TrayMenuState,
+    AppPaths, ClientController, NavigationDecision, PlatformEffect, TargetPlatform, TrayAction,
+    TrayMenuState, UpdateCheckResult, evaluate_update, parse_release_info,
+    resolve_target_executable, stage_and_replace_executable,
 };
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tao::dpi::LogicalSize;
@@ -18,26 +21,40 @@ enum UserEvent {
     IpcMessage(String),
     TrayAction(TrayAction),
     Effects(Vec<PlatformEffect>),
+    UpdateCheckResult(UpdateCheckResult),
+    UpdateProgress { downloaded: u64, total: u64 },
+    UpdateReady,
+    UpdateError(String),
 }
 
 struct SystemTray {
     _tray_icon: TrayIcon,
     toggle_visibility_item: MenuItem,
     toggle_mute_item: MenuItem,
+    update_item: MenuItem,
 }
 
 impl SystemTray {
     fn sync(&self, state: TrayMenuState) {
-        self.toggle_visibility_item.set_text(if state.window_visible {
-            "Hide to Tray"
-        } else {
-            "Show Blockidle"
-        });
+        self.toggle_visibility_item
+            .set_text(if state.window_visible {
+                "Hide to Tray"
+            } else {
+                "Show Blockidle"
+            });
         self.toggle_mute_item.set_text(if state.audio_muted {
             "Unmute Audio"
         } else {
             "Mute Audio"
         });
+        if let Some(ver) = state.update_available {
+            self.update_item
+                .set_text(format!("Atualização {ver} disponível"));
+            self.update_item.set_enabled(true);
+        } else {
+            self.update_item.set_text("Nenhuma atualização pendente");
+            self.update_item.set_enabled(false);
+        }
     }
 }
 
@@ -75,19 +92,32 @@ fn build_system_tray(
         None,
     );
     let separator1 = PredefinedMenuItem::separator();
-    let project_item = MenuItem::new("GitHub / Projeto", true, None);
+    let update_item = MenuItem::new(
+        if let Some(ref ver) = initial_state.update_available {
+            format!("Atualização {ver} disponível")
+        } else {
+            "Nenhuma atualização pendente".to_string()
+        },
+        initial_state.update_available.is_some(),
+        None,
+    );
     let separator2 = PredefinedMenuItem::separator();
+    let project_item = MenuItem::new("GitHub / Projeto", true, None);
+    let separator3 = PredefinedMenuItem::separator();
     let quit_item = MenuItem::new("Quit Blockidle", true, None);
 
     let _ = menu.append(&toggle_visibility_item);
     let _ = menu.append(&toggle_mute_item);
     let _ = menu.append(&separator1);
-    let _ = menu.append(&project_item);
+    let _ = menu.append(&update_item);
     let _ = menu.append(&separator2);
+    let _ = menu.append(&project_item);
+    let _ = menu.append(&separator3);
     let _ = menu.append(&quit_item);
 
     let vis_id = toggle_visibility_item.id().clone();
     let mute_id = toggle_mute_item.id().clone();
+    let update_id = update_item.id().clone();
     let project_id = project_item.id().clone();
     let quit_id = quit_item.id().clone();
 
@@ -96,6 +126,14 @@ fn build_system_tray(
             let _ = proxy.send_event(UserEvent::TrayAction(TrayAction::ToggleWindowVisibility));
         } else if event.id == mute_id {
             let _ = proxy.send_event(UserEvent::TrayAction(TrayAction::ToggleMute));
+        } else if event.id == update_id {
+            let _ = proxy.send_event(UserEvent::IpcMessage(
+                serde_json::json!({ "type": "set_settings_overlay_open", "open": true })
+                    .to_string(),
+            ));
+            let _ = proxy.send_event(UserEvent::Effects(vec![PlatformEffect::SetWindowVisible(
+                true,
+            )]));
         } else if event.id == project_id {
             let _ = proxy.send_event(UserEvent::Effects(vec![
                 PlatformEffect::OpenExternalBrowser(
@@ -119,6 +157,7 @@ fn build_system_tray(
         _tray_icon: tray_icon,
         toggle_visibility_item,
         toggle_mute_item,
+        update_item,
     })
 }
 
@@ -129,12 +168,157 @@ fn resolve_paths() -> AppPaths {
     })
 }
 
+#[cfg(target_os = "linux")]
+unsafe extern "C" {
+    fn malloc_trim(pad: usize) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" {
+    fn GetCurrentProcess() -> *mut std::ffi::c_void;
+    fn SetProcessWorkingSetSize(process: *mut std::ffi::c_void, min: usize, max: usize) -> i32;
+}
+
+fn trim_working_set() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        malloc_trim(0);
+    }
+    #[cfg(target_os = "windows")]
+    unsafe {
+        SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
+}
+
+fn check_github_release() -> UpdateCheckResult {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let user_agent = format!("blockidle-app/{current_version}");
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+
+    let response = match agent
+        .get("https://api.github.com/repos/RapidMesck/blockidle-app/releases/latest")
+        .set("User-Agent", &user_agent)
+        .set("Accept", "application/vnd.github.v3+json")
+        .call()
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            return UpdateCheckResult::Error {
+                message: format!("Falha na verificação de atualização: {e}"),
+            };
+        }
+    };
+
+    let body = match response.into_string() {
+        Ok(b) => b,
+        Err(e) => {
+            return UpdateCheckResult::Error {
+                message: format!("Falha na leitura da resposta: {e}"),
+            };
+        }
+    };
+
+    let release = match parse_release_info(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return UpdateCheckResult::Error {
+                message: format!("Falha ao processar dados de release: {e}"),
+            };
+        }
+    };
+
+    evaluate_update(current_version, &release, TargetPlatform::current())
+}
+
+fn download_and_apply_update(asset_url: &str, _asset_name: &str, proxy: EventLoopProxy<UserEvent>) {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(15))
+        .timeout_read(std::time::Duration::from_secs(60))
+        .build();
+
+    let user_agent = format!("blockidle-app/{}", env!("CARGO_PKG_VERSION"));
+    let response = match agent
+        .get(asset_url)
+        .set("User-Agent", &user_agent)
+        .set("Accept", "application/octet-stream")
+        .call()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = proxy.send_event(UserEvent::UpdateError(format!("Falha no download: {e}")));
+            return;
+        }
+    };
+
+    let total_size = response
+        .header("Content-Length")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    let mut reader = response.into_reader();
+    let mut buffer = Vec::with_capacity(if total_size > 0 {
+        total_size as usize
+    } else {
+        1024 * 1024
+    });
+    let mut chunk = [0u8; 64 * 1024];
+    let mut downloaded: u64 = 0;
+    let mut last_report = std::time::Instant::now();
+
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                buffer.extend_from_slice(&chunk[..n]);
+                downloaded += n as u64;
+                if last_report.elapsed() >= std::time::Duration::from_millis(150)
+                    || (total_size > 0 && downloaded == total_size)
+                {
+                    let _ = proxy.send_event(UserEvent::UpdateProgress {
+                        downloaded,
+                        total: total_size,
+                    });
+                    last_report = std::time::Instant::now();
+                }
+            }
+            Err(e) => {
+                let _ = proxy.send_event(UserEvent::UpdateError(format!(
+                    "Erro ao transferir arquivo: {e}"
+                )));
+                return;
+            }
+        }
+    }
+
+    let (target_path, is_appimage) = match resolve_target_executable() {
+        Ok(pair) => pair,
+        Err(e) => {
+            let _ = proxy.send_event(UserEvent::UpdateError(e));
+            return;
+        }
+    };
+
+    match stage_and_replace_executable(&target_path, &buffer, None, is_appimage) {
+        Ok(()) => {
+            let _ = proxy.send_event(UserEvent::UpdateReady);
+        }
+        Err(e) => {
+            let _ = proxy.send_event(UserEvent::UpdateError(format!(
+                "Falha ao aplicar binário: {e}"
+            )));
+        }
+    }
+}
+
 fn execute_effects(
     effects: Vec<PlatformEffect>,
     window: &Window,
     webview: &WebView,
     tray: Option<&SystemTray>,
     control_flow: &mut ControlFlow,
+    proxy: &EventLoopProxy<UserEvent>,
 ) {
     for effect in effects {
         match effect {
@@ -149,6 +333,8 @@ fn execute_effects(
                 if visible {
                     window.set_minimized(false);
                     window.set_focus();
+                } else {
+                    trim_working_set();
                 }
             }
             PlatformEffect::SetFullscreen(fullscreen) => {
@@ -165,6 +351,32 @@ fn execute_effects(
                 if let Some(tray) = tray {
                     tray.sync(state);
                 }
+            }
+            PlatformEffect::TriggerUpdateCheck => {
+                let thread_proxy = proxy.clone();
+                std::thread::spawn(move || {
+                    let result = check_github_release();
+                    let _ = thread_proxy.send_event(UserEvent::UpdateCheckResult(result));
+                });
+            }
+            PlatformEffect::TriggerUpdateDownload {
+                asset_url,
+                asset_name,
+            } => {
+                let thread_proxy = proxy.clone();
+                std::thread::spawn(move || {
+                    download_and_apply_update(&asset_url, &asset_name, thread_proxy);
+                });
+            }
+            PlatformEffect::RelaunchApp => {
+                let (target_path, _) = resolve_target_executable().unwrap_or_else(|_| {
+                    (
+                        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("blockidle-app")),
+                        false,
+                    )
+                });
+                let _ = std::process::Command::new(&target_path).spawn();
+                *control_flow = ControlFlow::Exit;
             }
             PlatformEffect::ExitApp => {
                 *control_flow = ControlFlow::Exit;
@@ -259,9 +471,7 @@ mod linux_runtime {
         fn g_log_set_handler(
             log_domain: *const c_char,
             log_levels: u32,
-            log_func: Option<
-                unsafe extern "C" fn(*const c_char, u32, *const c_char, *mut c_void),
-            >,
+            log_func: Option<unsafe extern "C" fn(*const c_char, u32, *const c_char, *mut c_void)>,
             user_data: *mut c_void,
         ) -> u32;
         fn gtk_settings_get_default() -> *mut c_void;
@@ -460,10 +670,30 @@ fn main() -> wry::Result<()> {
     let tray = build_system_tray(initial_tray_state, proxy.clone());
 
     let mut web_context = WebContext::new(Some(data_dir));
-    let webview = build_game_view(&window, &mut web_context, &controller, proxy)?;
+    let webview = build_game_view(&window, &mut web_context, &controller, proxy.clone())?;
 
     #[cfg(target_os = "linux")]
     linux_runtime::apply_gtk_settings();
+
+    if let Ok(val) = std::env::var("BLOCKIDLE_AUTO_TRAY_SECS")
+        && let Ok(secs) = val.parse::<u64>()
+    {
+        let auto_proxy = proxy.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(secs));
+            let _ = auto_proxy.send_event(UserEvent::TrayAction(TrayAction::Hide));
+        });
+    }
+
+    if std::env::var("BLOCKIDLE_DISABLE_AUTO_UPDATE_CHECK").is_err() {
+        let update_timer_proxy = proxy.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let _ = update_timer_proxy.send_event(UserEvent::IpcMessage(
+                serde_json::json!({ "type": "check_for_updates" }).to_string(),
+            ));
+        });
+    }
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -475,14 +705,28 @@ fn main() -> wry::Result<()> {
                         .lock()
                         .expect("controller lock")
                         .handle_close_requested();
-                    execute_effects(effects, &window, &webview, tray.as_ref(), control_flow);
+                    execute_effects(
+                        effects,
+                        &window,
+                        &webview,
+                        tray.as_ref(),
+                        control_flow,
+                        &proxy,
+                    );
                 }
                 WindowEvent::Focused(focused) => {
                     let effects = controller
                         .lock()
                         .expect("controller lock")
                         .handle_focus_changed(focused);
-                    execute_effects(effects, &window, &webview, tray.as_ref(), control_flow);
+                    execute_effects(
+                        effects,
+                        &window,
+                        &webview,
+                        tray.as_ref(),
+                        control_flow,
+                        &proxy,
+                    );
                 }
                 WindowEvent::Resized(physical_size) => {
                     let is_minimized = window.is_minimized();
@@ -499,7 +743,14 @@ fn main() -> wry::Result<()> {
                             .expect("controller lock")
                             .handle_window_resized(logical.width, logical.height)
                     };
-                    execute_effects(effects, &window, &webview, tray.as_ref(), control_flow);
+                    execute_effects(
+                        effects,
+                        &window,
+                        &webview,
+                        tray.as_ref(),
+                        control_flow,
+                        &proxy,
+                    );
                 }
                 _ => {}
             },
@@ -509,17 +760,94 @@ fn main() -> wry::Result<()> {
                         .lock()
                         .expect("controller lock")
                         .handle_ipc_message(&payload);
-                    execute_effects(effects, &window, &webview, tray.as_ref(), control_flow);
+                    execute_effects(
+                        effects,
+                        &window,
+                        &webview,
+                        tray.as_ref(),
+                        control_flow,
+                        &proxy,
+                    );
                 }
                 UserEvent::TrayAction(action) => {
                     let effects = controller
                         .lock()
                         .expect("controller lock")
                         .handle_tray_action(action);
-                    execute_effects(effects, &window, &webview, tray.as_ref(), control_flow);
+                    execute_effects(
+                        effects,
+                        &window,
+                        &webview,
+                        tray.as_ref(),
+                        control_flow,
+                        &proxy,
+                    );
                 }
                 UserEvent::Effects(effects) => {
-                    execute_effects(effects, &window, &webview, tray.as_ref(), control_flow);
+                    execute_effects(
+                        effects,
+                        &window,
+                        &webview,
+                        tray.as_ref(),
+                        control_flow,
+                        &proxy,
+                    );
+                }
+                UserEvent::UpdateCheckResult(result) => {
+                    let effects = controller
+                        .lock()
+                        .expect("controller lock")
+                        .apply_update_check_result(&result);
+                    execute_effects(
+                        effects,
+                        &window,
+                        &webview,
+                        tray.as_ref(),
+                        control_flow,
+                        &proxy,
+                    );
+                }
+                UserEvent::UpdateProgress { downloaded, total } => {
+                    let effects = controller
+                        .lock()
+                        .expect("controller lock")
+                        .apply_update_progress(downloaded, total);
+                    execute_effects(
+                        effects,
+                        &window,
+                        &webview,
+                        tray.as_ref(),
+                        control_flow,
+                        &proxy,
+                    );
+                }
+                UserEvent::UpdateReady => {
+                    let effects = controller
+                        .lock()
+                        .expect("controller lock")
+                        .apply_update_ready();
+                    execute_effects(
+                        effects,
+                        &window,
+                        &webview,
+                        tray.as_ref(),
+                        control_flow,
+                        &proxy,
+                    );
+                }
+                UserEvent::UpdateError(err) => {
+                    let effects = controller
+                        .lock()
+                        .expect("controller lock")
+                        .apply_update_error(&err);
+                    execute_effects(
+                        effects,
+                        &window,
+                        &webview,
+                        tray.as_ref(),
+                        control_flow,
+                        &proxy,
+                    );
                 }
             },
             _ => {}

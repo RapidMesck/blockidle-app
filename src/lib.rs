@@ -8,6 +8,274 @@ pub const GAME_VIEW_INITIAL_URL: &str = "https://blockidle.io/play";
 
 const INIT_SCRIPT_TEMPLATE: &str = include_str!("init_script.js");
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TargetPlatform {
+    WindowsX86_64,
+    LinuxX86_64AppImage,
+    LinuxX86_64Standalone,
+}
+
+impl TargetPlatform {
+    pub fn current() -> Self {
+        #[cfg(target_os = "windows")]
+        {
+            Self::WindowsX86_64
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            if std::env::var_os("APPIMAGE").is_some() {
+                Self::LinuxX86_64AppImage
+            } else {
+                Self::LinuxX86_64Standalone
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseAsset {
+    pub name: String,
+    pub browser_download_url: String,
+    #[serde(default)]
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseInfo {
+    pub tag_name: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub html_url: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub assets: Vec<ReleaseAsset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum UpdateCheckResult {
+    UpToDate,
+    UpdateAvailable {
+        latest_version: String,
+        release_name: String,
+        release_notes: String,
+        release_url: String,
+        asset_name: String,
+        asset_url: String,
+        asset_size: u64,
+    },
+    NoMatchingAsset {
+        latest_version: String,
+        release_url: String,
+    },
+    Error {
+        message: String,
+    },
+}
+
+pub fn parse_release_info(json: &str) -> Result<ReleaseInfo, String> {
+    serde_json::from_str::<ReleaseInfo>(json).map_err(|e| e.to_string())
+}
+
+pub fn select_release_asset(
+    assets: &[ReleaseAsset],
+    target: TargetPlatform,
+) -> Option<&ReleaseAsset> {
+    assets.iter().find(|asset| {
+        let name = &asset.name;
+        match target {
+            TargetPlatform::WindowsX86_64 => {
+                name.ends_with(".exe") && (name.contains("windows") || name.contains("x86_64"))
+            }
+            TargetPlatform::LinuxX86_64AppImage => {
+                name.ends_with(".AppImage") || name.ends_with(".appimage")
+            }
+            TargetPlatform::LinuxX86_64Standalone => {
+                name.ends_with(".tar.gz") && name.contains("linux")
+            }
+        }
+    })
+}
+
+pub fn parse_version_triplet(v: &str) -> Option<(u64, u64, u64)> {
+    let clean = v.trim().strip_prefix('v').unwrap_or(v.trim());
+    let mut parts = clean.split('.');
+    let major = parts.next()?.parse::<u64>().ok()?;
+    let minor = parts.next()?.parse::<u64>().ok()?;
+    let patch = parts.next()?.parse::<u64>().ok()?;
+    Some((major, minor, patch))
+}
+
+pub fn compare_semver(current: &str, latest: &str) -> Option<std::cmp::Ordering> {
+    let cur = parse_version_triplet(current)?;
+    let lat = parse_version_triplet(latest)?;
+    Some(lat.cmp(&cur))
+}
+
+pub fn evaluate_update(
+    current_version: &str,
+    release: &ReleaseInfo,
+    target: TargetPlatform,
+) -> UpdateCheckResult {
+    match compare_semver(current_version, &release.tag_name) {
+        Some(std::cmp::Ordering::Greater) => {
+            if let Some(asset) = select_release_asset(&release.assets, target) {
+                UpdateCheckResult::UpdateAvailable {
+                    latest_version: release.tag_name.clone(),
+                    release_name: release.name.clone(),
+                    release_notes: release.body.clone(),
+                    release_url: release.html_url.clone(),
+                    asset_name: asset.name.clone(),
+                    asset_url: asset.browser_download_url.clone(),
+                    asset_size: asset.size,
+                }
+            } else {
+                UpdateCheckResult::NoMatchingAsset {
+                    latest_version: release.tag_name.clone(),
+                    release_url: release.html_url.clone(),
+                }
+            }
+        }
+        _ => UpdateCheckResult::UpToDate,
+    }
+}
+
+pub fn calculate_sha256(bytes: &[u8]) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
+    let mut out = String::with_capacity(64);
+    for byte in digest.as_ref() {
+        use std::fmt::Write;
+        let _ = write!(&mut out, "{:02x}", byte);
+    }
+    out
+}
+
+#[derive(Debug)]
+pub enum UpdateInstallError {
+    ChecksumMismatch { expected: String, actual: String },
+    Io(io::Error),
+    TargetParentNotFound,
+}
+
+impl std::fmt::Display for UpdateInstallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ChecksumMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "SHA-256 checksum mismatch: expected {expected}, got {actual}"
+                )
+            }
+            Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::TargetParentNotFound => {
+                write!(f, "Parent directory of target executable not found")
+            }
+        }
+    }
+}
+
+impl std::error::Error for UpdateInstallError {}
+
+impl From<io::Error> for UpdateInstallError {
+    fn from(e: io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+pub fn stage_and_replace_executable(
+    target_path: &Path,
+    new_bytes: &[u8],
+    expected_sha256: Option<&str>,
+    is_appimage: bool,
+) -> Result<(), UpdateInstallError> {
+    if let Some(expected) = expected_sha256 {
+        let actual = calculate_sha256(new_bytes);
+        if !actual.eq_ignore_ascii_case(expected.trim()) {
+            return Err(UpdateInstallError::ChecksumMismatch {
+                expected: expected.to_string(),
+                actual,
+            });
+        }
+    }
+
+    let parent = target_path
+        .parent()
+        .ok_or(UpdateInstallError::TargetParentNotFound)?;
+
+    let temp_name = format!(
+        ".{}.{}.tmp",
+        target_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("update"),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let temp_path = parent.join(temp_name);
+
+    fs::write(&temp_path, new_bytes)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o755);
+        let _ = fs::set_permissions(&temp_path, perms);
+    }
+
+    if is_appimage {
+        fs::rename(&temp_path, target_path)?;
+    } else {
+        #[cfg(target_os = "windows")]
+        {
+            self_replace::self_replace(&temp_path).map_err(io::Error::other)?;
+            let _ = fs::remove_file(&temp_path);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Ok(current) = std::env::current_exe()
+                && current == target_path
+            {
+                self_replace::self_replace(&temp_path).map_err(io::Error::other)?;
+                let _ = fs::remove_file(&temp_path);
+                return Ok(());
+            }
+            fs::rename(&temp_path, target_path)?;
+        }
+    }
+
+    Ok(())
+}
+
+pub fn resolve_target_executable_with<F>(get_appimage_env: F) -> Result<(PathBuf, bool), String>
+where
+    F: FnOnce() -> Option<std::ffi::OsString>,
+{
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(val) = get_appimage_env() {
+            let s = val.to_string_lossy();
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Ok((PathBuf::from(trimmed), true));
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = get_appimage_env;
+
+    let current = std::env::current_exe()
+        .map_err(|e| format!("Failed to determine current executable: {e}"))?;
+    Ok((current, false))
+}
+
+pub fn resolve_target_executable() -> Result<(PathBuf, bool), String> {
+    resolve_target_executable_with(|| std::env::var_os("APPIMAGE"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavigationDecision {
     AllowInGameView,
@@ -15,10 +283,12 @@ pub enum NavigationDecision {
     Block,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrayMenuState {
     pub window_visible: bool,
     pub audio_muted: bool,
+    #[serde(default)]
+    pub update_available: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,28 +308,77 @@ pub enum PlatformEffect {
     SetFullscreen(bool),
     ReloadGameView,
     UpdateTrayMenu(TrayMenuState),
+    TriggerUpdateCheck,
+    TriggerUpdateDownload {
+        asset_url: String,
+        asset_name: String,
+    },
+    RelaunchApp,
     ExitApp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum UpdateState {
+    Idle,
+    Checking,
+    Available {
+        latest_version: String,
+        release_name: String,
+        release_notes: String,
+        release_url: String,
+        asset_name: String,
+        asset_url: String,
+        asset_size: u64,
+    },
+    Downloading {
+        downloaded: u64,
+        total: u64,
+    },
+    ReadyToRestart,
+    UpToDate,
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum IpcMessage {
     ClientReady,
-    UpdateSettings { settings: ClientSettings },
+    UpdateSettings {
+        settings: ClientSettings,
+    },
     UpdateKeybinding {
         action: KeybindingAction,
         shortcut: String,
     },
     RestoreDefaultKeybindings,
-    TriggerKeybinding { shortcut: String },
+    TriggerKeybinding {
+        shortcut: String,
+    },
     ToggleSettingsOverlay,
-    SetSettingsOverlayOpen { open: bool },
+    SetSettingsOverlayOpen {
+        open: bool,
+    },
     ToggleFpsHud,
-    OpenExternalUrl { url: String },
+    OpenExternalUrl {
+        url: String,
+    },
     ReloadGameView,
     ToggleFullscreen,
     ToggleAudioMute,
     HideToTray,
+    CheckForUpdates,
+    StartUpdate {
+        asset_url: String,
+        asset_name: String,
+    },
+    RelaunchApp,
+}
+
+fn default_app_version() -> String {
+    format!("v{}", env!("CARGO_PKG_VERSION"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +389,9 @@ pub struct WebViewClientState {
     pub window_minimized: bool,
     pub effective_fps_cap: Option<u32>,
     pub settings_overlay_open: bool,
+    pub update_state: UpdateState,
+    #[serde(default = "default_app_version")]
+    pub app_version: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -378,6 +700,7 @@ pub struct ClientController {
     window_visible: bool,
     window_minimized: bool,
     settings_overlay_open: bool,
+    update_state: UpdateState,
 }
 
 impl ClientController {
@@ -420,6 +743,7 @@ impl ClientController {
             window_visible: true,
             window_minimized: false,
             settings_overlay_open: false,
+            update_state: UpdateState::Idle,
         };
         if should_persist {
             let _ = controller.save_settings();
@@ -436,10 +760,7 @@ impl ClientController {
     }
 
     pub fn ensure_fontconfig_file(&self) -> io::Result<PathBuf> {
-        let config_dir = self
-            .config_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."));
+        let config_dir = self.config_path.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(config_dir)?;
         let fonts_conf_path = config_dir.join("fonts.conf");
         let xml = r#"<?xml version="1.0"?>
@@ -516,8 +837,7 @@ impl ClientController {
         if let Some(parent) = self.config_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(&self.settings)
-            .map_err(io::Error::other)?;
+        let json = serde_json::to_string_pretty(&self.settings).map_err(io::Error::other)?;
         fs::write(&self.config_path, json)
     }
 
@@ -651,10 +971,75 @@ impl ClientController {
         }
     }
 
+    pub fn update_state(&self) -> &UpdateState {
+        &self.update_state
+    }
+
+    pub fn apply_update_check_result(&mut self, result: &UpdateCheckResult) -> Vec<PlatformEffect> {
+        self.update_state = match result {
+            UpdateCheckResult::UpdateAvailable {
+                latest_version,
+                release_name,
+                release_notes,
+                release_url,
+                asset_name,
+                asset_url,
+                asset_size,
+            } => UpdateState::Available {
+                latest_version: latest_version.clone(),
+                release_name: release_name.clone(),
+                release_notes: release_notes.clone(),
+                release_url: release_url.clone(),
+                asset_name: asset_name.clone(),
+                asset_url: asset_url.clone(),
+                asset_size: *asset_size,
+            },
+            UpdateCheckResult::UpToDate => UpdateState::UpToDate,
+            UpdateCheckResult::NoMatchingAsset { latest_version, .. } => UpdateState::Error {
+                message: format!("No compatible release asset found for {latest_version}"),
+            },
+            UpdateCheckResult::Error { message } => UpdateState::Error {
+                message: message.clone(),
+            },
+        };
+        vec![
+            PlatformEffect::UpdateTrayMenu(self.tray_menu_state()),
+            PlatformEffect::SyncWebViewState(self.webview_state_sync_script()),
+        ]
+    }
+
+    pub fn apply_update_progress(&mut self, downloaded: u64, total: u64) -> Vec<PlatformEffect> {
+        self.update_state = UpdateState::Downloading { downloaded, total };
+        vec![PlatformEffect::SyncWebViewState(
+            self.webview_state_sync_script(),
+        )]
+    }
+
+    pub fn apply_update_ready(&mut self) -> Vec<PlatformEffect> {
+        self.update_state = UpdateState::ReadyToRestart;
+        vec![PlatformEffect::SyncWebViewState(
+            self.webview_state_sync_script(),
+        )]
+    }
+
+    pub fn apply_update_error(&mut self, err: &str) -> Vec<PlatformEffect> {
+        self.update_state = UpdateState::Error {
+            message: err.to_string(),
+        };
+        vec![PlatformEffect::SyncWebViewState(
+            self.webview_state_sync_script(),
+        )]
+    }
+
     pub fn tray_menu_state(&self) -> TrayMenuState {
+        let update_available = match &self.update_state {
+            UpdateState::Available { latest_version, .. } => Some(latest_version.clone()),
+            _ => None,
+        };
         TrayMenuState {
             window_visible: self.window_visible,
             audio_muted: self.settings.audio_muted,
+            update_available,
         }
     }
 
@@ -666,6 +1051,8 @@ impl ClientController {
             window_minimized: self.window_minimized,
             effective_fps_cap: self.effective_fps_cap(),
             settings_overlay_open: self.settings_overlay_open,
+            update_state: self.update_state.clone(),
+            app_version: format!("v{}", env!("CARGO_PKG_VERSION")),
         }
     }
 
@@ -680,7 +1067,13 @@ impl ClientController {
     pub fn initialization_script(&self) -> String {
         let state_json =
             serde_json::to_string(&self.webview_state()).unwrap_or_else(|_| "{}".to_string());
-        INIT_SCRIPT_TEMPLATE.replacen("__BLOCKIDLE_INITIAL_STATE_JSON__", &state_json, 1)
+        INIT_SCRIPT_TEMPLATE
+            .replacen("__BLOCKIDLE_INITIAL_STATE_JSON__", &state_json, 1)
+            .replacen(
+                "__BLOCKIDLE_APP_VERSION__",
+                &format!("v{}", env!("CARGO_PKG_VERSION")),
+                1,
+            )
     }
 
     pub fn handle_ipc_message(&mut self, raw_json: &str) -> Vec<PlatformEffect> {
@@ -732,6 +1125,30 @@ impl ClientController {
             IpcMessage::ToggleFullscreen => self.toggle_fullscreen(),
             IpcMessage::ToggleAudioMute => self.toggle_audio_mute(),
             IpcMessage::HideToTray => self.hide_to_tray(),
+            IpcMessage::CheckForUpdates => {
+                self.update_state = UpdateState::Checking;
+                vec![
+                    PlatformEffect::TriggerUpdateCheck,
+                    PlatformEffect::SyncWebViewState(self.webview_state_sync_script()),
+                ]
+            }
+            IpcMessage::StartUpdate {
+                asset_url,
+                asset_name,
+            } => {
+                self.update_state = UpdateState::Downloading {
+                    downloaded: 0,
+                    total: 0,
+                };
+                vec![
+                    PlatformEffect::TriggerUpdateDownload {
+                        asset_url,
+                        asset_name,
+                    },
+                    PlatformEffect::SyncWebViewState(self.webview_state_sync_script()),
+                ]
+            }
+            IpcMessage::RelaunchApp => vec![PlatformEffect::RelaunchApp],
         }
     }
 

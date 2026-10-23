@@ -103,6 +103,13 @@
     let keybindStatusText = '';
     const consumedKeys = new Set();
 
+    let updateBoxElement = null;
+    let updateStatusElement = null;
+    let updateProgressElement = null;
+    let checkUpdateBtnElement = null;
+    let startUpdateBtnElement = null;
+    let relaunchBtnElement = null;
+
     const KEYBIND_ACTIONS = [
         { key: 'toggle_settings_overlay', label: 'Toggle Settings Overlay' },
         { key: 'toggle_fps_hud', label: 'Toggle FPS HUD' },
@@ -228,6 +235,71 @@
         }
         if (keybindStatusElement) {
             keybindStatusElement.textContent = keybindStatusText;
+        }
+
+        const uState = st.update_state || { status: 'idle' };
+        if (updateStatusElement) {
+            switch (uState.status) {
+                case 'checking':
+                    updateStatusElement.textContent = 'Verificando atualizações...';
+                    if (checkUpdateBtnElement) checkUpdateBtnElement.disabled = true;
+                    if (startUpdateBtnElement) startUpdateBtnElement.style.display = 'none';
+                    if (relaunchBtnElement) relaunchBtnElement.style.display = 'none';
+                    if (updateProgressElement) updateProgressElement.style.display = 'none';
+                    break;
+                case 'available':
+                    updateStatusElement.textContent = 'Nova versão ' + (uState.latest_version || '') + ' disponível!';
+                    if (checkUpdateBtnElement) checkUpdateBtnElement.disabled = false;
+                    if (startUpdateBtnElement) startUpdateBtnElement.style.display = 'inline-block';
+                    if (relaunchBtnElement) relaunchBtnElement.style.display = 'none';
+                    if (updateProgressElement) updateProgressElement.style.display = 'none';
+                    break;
+                case 'downloading':
+                    const mb = (uState.downloaded / (1024 * 1024)).toFixed(1);
+                    const totalMb = (uState.total / (1024 * 1024)).toFixed(1);
+                    const pct = uState.total > 0 ? Math.round((uState.downloaded / uState.total) * 100) : 0;
+                    updateStatusElement.textContent = 'Baixando: ' + mb + ' / ' + totalMb + ' MB (' + pct + '%)';
+                    if (checkUpdateBtnElement) checkUpdateBtnElement.disabled = true;
+                    if (startUpdateBtnElement) startUpdateBtnElement.style.display = 'none';
+                    if (relaunchBtnElement) relaunchBtnElement.style.display = 'none';
+                    if (updateProgressElement) {
+                        updateProgressElement.style.display = 'block';
+                        updateProgressElement.textContent = 'Progresso: ' + pct + '%';
+                    }
+                    break;
+                case 'ready_to_restart':
+                    updateStatusElement.textContent = 'Atualização baixada com sucesso!';
+                    if (checkUpdateBtnElement) checkUpdateBtnElement.disabled = true;
+                    if (startUpdateBtnElement) startUpdateBtnElement.style.display = 'none';
+                    if (relaunchBtnElement) relaunchBtnElement.style.display = 'inline-block';
+                    if (updateProgressElement) updateProgressElement.style.display = 'none';
+                    break;
+                case 'up_to_date': {
+                    const currentVer = (st && st.app_version) ? st.app_version : '__BLOCKIDLE_APP_VERSION__';
+                    updateStatusElement.textContent = 'Seu cliente está na versão mais recente (' + currentVer + ').';
+                    if (checkUpdateBtnElement) checkUpdateBtnElement.disabled = false;
+                    if (startUpdateBtnElement) startUpdateBtnElement.style.display = 'none';
+                    if (relaunchBtnElement) relaunchBtnElement.style.display = 'none';
+                    if (updateProgressElement) updateProgressElement.style.display = 'none';
+                    break;
+                }
+                case 'error':
+                    updateStatusElement.textContent = 'Erro ao verificar/atualizar: ' + (uState.message || 'desconhecido');
+                    if (checkUpdateBtnElement) checkUpdateBtnElement.disabled = false;
+                    if (startUpdateBtnElement) startUpdateBtnElement.style.display = 'none';
+                    if (relaunchBtnElement) relaunchBtnElement.style.display = 'none';
+                    if (updateProgressElement) updateProgressElement.style.display = 'none';
+                    break;
+                default: {
+                    const currentVer = (st && st.app_version) ? st.app_version : '__BLOCKIDLE_APP_VERSION__';
+                    updateStatusElement.textContent = 'Versão instalada: ' + currentVer;
+                    if (checkUpdateBtnElement) checkUpdateBtnElement.disabled = false;
+                    if (startUpdateBtnElement) startUpdateBtnElement.style.display = 'none';
+                    if (relaunchBtnElement) relaunchBtnElement.style.display = 'none';
+                    if (updateProgressElement) updateProgressElement.style.display = 'none';
+                    break;
+                }
+            }
         }
     }
 
@@ -554,13 +626,83 @@
             });
             panel.appendChild(restoreBtn);
 
+            addSeparator();
+            addSection('Atualização do Cliente');
+
+            const updateBox = document.createElement('div');
+            updateBox.id = 'blockidle-update-box';
+            updateBox.className = 'bi-about';
+
+            const updateStatus = document.createElement('div');
+            updateStatus.id = 'blockidle-update-status';
+            updateStatus.style.marginBottom = '6px';
+            updateStatus.textContent = 'Versão instalada: __BLOCKIDLE_APP_VERSION__';
+
+            const updateProgress = document.createElement('div');
+            updateProgress.id = 'blockidle-update-progress';
+            updateProgress.style.marginBottom = '6px';
+            updateProgress.style.display = 'none';
+
+            const updateActions = document.createElement('div');
+            updateActions.className = 'bi-row';
+            updateActions.style.gap = '8px';
+
+            const checkUpdateBtn = document.createElement('button');
+            checkUpdateBtn.id = 'blockidle-check-update-btn';
+            checkUpdateBtn.className = 'bi-btn';
+            checkUpdateBtn.textContent = 'Verificar Atualizações';
+            onElementEvent(checkUpdateBtn, 'click', function() {
+                sendIpc({ type: 'check_for_updates' });
+            });
+
+            const startUpdateBtn = document.createElement('button');
+            startUpdateBtn.id = 'blockidle-start-update-btn';
+            startUpdateBtn.className = 'bi-btn';
+            startUpdateBtn.textContent = 'Atualizar Agora';
+            startUpdateBtn.style.display = 'none';
+            onElementEvent(startUpdateBtn, 'click', function() {
+                const st = window.__BLOCKIDLE_CLIENT_STATE__;
+                if (st && st.update_state && st.update_state.status === 'available') {
+                    sendIpc({
+                        type: 'start_update',
+                        asset_url: st.update_state.asset_url,
+                        asset_name: st.update_state.asset_name,
+                    });
+                }
+            });
+
+            const relaunchBtn = document.createElement('button');
+            relaunchBtn.id = 'blockidle-relaunch-btn';
+            relaunchBtn.className = 'bi-btn';
+            relaunchBtn.textContent = 'Reiniciar Agora';
+            relaunchBtn.style.display = 'none';
+            onElementEvent(relaunchBtn, 'click', function() {
+                sendIpc({ type: 'relaunch_app' });
+            });
+
+            updateActions.appendChild(checkUpdateBtn);
+            updateActions.appendChild(startUpdateBtn);
+            updateActions.appendChild(relaunchBtn);
+
+            updateBox.appendChild(updateStatus);
+            updateBox.appendChild(updateProgress);
+            updateBox.appendChild(updateActions);
+            panel.appendChild(updateBox);
+
+            updateBoxElement = updateBox;
+            updateStatusElement = updateStatus;
+            updateProgressElement = updateProgress;
+            checkUpdateBtnElement = checkUpdateBtn;
+            startUpdateBtnElement = startUpdateBtn;
+            relaunchBtnElement = relaunchBtn;
+
             const aboutBox = document.createElement('div');
             aboutBox.id = 'blockidle-about-box';
             aboutBox.className = 'bi-about';
 
             const aboutTitle = document.createElement('div');
             aboutTitle.className = 'bi-about-title';
-            aboutTitle.textContent = 'Blockidle Client v0.1.0';
+            aboutTitle.textContent = 'Blockidle Client __BLOCKIDLE_APP_VERSION__';
 
             const aboutAuthor = document.createElement('div');
             aboutAuthor.className = 'bi-about-author';
@@ -958,6 +1100,9 @@
         }
         const id = nextRequestId++;
         pendingCallbacks.push({ id: id, callback: callback, cancelled: false });
+        if (getEffectiveCap() === 0 && pendingCallbacks.length > 50) {
+            pendingCallbacks = pendingCallbacks.slice(-50);
+        }
         schedulePump();
         return id;
     };
@@ -1074,6 +1219,39 @@
         });
     }
 
+    function pruneIdleMemory() {
+        try {
+            if (Array.isArray(window.__eventos) && window.__eventos.length > 200) {
+                window.__eventos.splice(0, window.__eventos.length - 200);
+            }
+            if (typeof window.gc === 'function') {
+                window.gc();
+            }
+        } catch (_) {}
+    }
+
+    function syncRenderState(isPaused) {
+        try {
+            var cenaCanvas = document.getElementById ? document.getElementById('cena') : null;
+            if (isPaused) {
+                if (window.__renderizador && typeof window.__renderizador.setSize === 'function') {
+                    window.__renderizador.setSize(1, 1, false);
+                } else if (cenaCanvas) {
+                    cenaCanvas.width = 1;
+                    cenaCanvas.height = 1;
+                }
+                pruneIdleMemory();
+            } else {
+                if (window.__renderizador && typeof window.__renderizador.setSize === 'function') {
+                    window.__renderizador.setSize(window.innerWidth || 1280, window.innerHeight || 720, false);
+                }
+                if (typeof window.dispatchEvent === 'function' && typeof Event === 'function') {
+                    window.dispatchEvent(new Event('resize'));
+                }
+            }
+        } catch (_e) {}
+    }
+
     window.__blockidleApplyState = function(nextState) {
         const prevCap = getEffectiveCap();
         window.__BLOCKIDLE_CLIENT_STATE__ = nextState;
@@ -1081,9 +1259,11 @@
         const nextCap = getEffectiveCap();
         if (nextCap === 0) {
             clearScheduledPump();
+            syncRenderState(true);
         } else if (prevCap === 0 && (nextCap === null || nextCap > 0)) {
             lastFrameTimestamp = -Infinity;
             clearScheduledPump();
+            syncRenderState(false);
             schedulePump();
         } else if (prevCap !== nextCap) {
             clearScheduledPump();
@@ -1106,6 +1286,11 @@
 
     if (typeof window.setInterval === 'function') {
         window.setInterval(updateFpsHud, 250);
+        window.setInterval(function() {
+            if (getEffectiveCap() === 0) {
+                pruneIdleMemory();
+            }
+        }, 10000);
     }
 
     if (document.readyState === 'loading') {

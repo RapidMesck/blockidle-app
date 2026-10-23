@@ -176,12 +176,21 @@ fn main() -> wry::Result<()> {
                     execute_effects(effects, &window, &webview, control_flow);
                 }
                 WindowEvent::Resized(physical_size) => {
-                    let scale = window.scale_factor();
-                    let logical = physical_size.to_logical::<u32>(scale);
-                    controller
-                        .lock()
-                        .expect("controller lock")
-                        .handle_window_resized(logical.width, logical.height);
+                    let is_minimized = window.is_minimized();
+                    let effects = if is_minimized {
+                        controller
+                            .lock()
+                            .expect("controller lock")
+                            .handle_minimized_changed(true)
+                    } else {
+                        let scale = window.scale_factor();
+                        let logical = physical_size.to_logical::<u32>(scale);
+                        controller
+                            .lock()
+                            .expect("controller lock")
+                            .handle_window_resized(logical.width, logical.height)
+                    };
+                    execute_effects(effects, &window, &webview, control_flow);
                 }
                 _ => {}
             },

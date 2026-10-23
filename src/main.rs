@@ -141,6 +141,7 @@ fn execute_effects(
             PlatformEffect::SetWindowVisible(visible) => {
                 window.set_visible(visible);
                 if visible {
+                    window.set_minimized(false);
                     window.set_focus();
                 }
             }

@@ -4,6 +4,234 @@ use blockidle_app::{
 };
 use tempfile::tempdir;
 
+const MOCK_DOM_PREAMBLE: &str = r#"
+let now = 1000;
+let nativeRafCallbacks = [];
+let nextNativeRafId = 1;
+let timers = [];
+let nextTimerId = 1;
+let nativeHidden = false;
+let nativeVisibilityState = 'visible';
+const ipcMessages = [];
+const winListeners = [];
+const docListeners = [];
+
+function createMockNode(tagName) {
+    const children = [];
+    const elementsById = new Map();
+    const listeners = {};
+    const attributes = {};
+    const node = {
+        tagName: (tagName || 'DIV').toUpperCase(),
+        id: '',
+        className: '',
+        type: '',
+        value: '',
+        checked: false,
+        disabled: false,
+        style: {},
+        dataset: {},
+        textContent: '',
+        innerHTML: '',
+        children: children,
+        shadowRoot: null,
+        attachShadow(opts) {
+            const root = createMockNode('SHADOW-ROOT');
+            root.mode = opts && opts.mode;
+            this.shadowRoot = root;
+            return root;
+        },
+        appendChild(child) {
+            children.push(child);
+            if (child && child.id) {
+                elementsById.set(child.id, child);
+            }
+            return child;
+        },
+        getElementById(id) {
+            if (elementsById.has(id)) return elementsById.get(id);
+            for (const c of children) {
+                if (c.id === id) return c;
+                if (c.getElementById) {
+                    const found = c.getElementById(id);
+                    if (found) return found;
+                }
+            }
+            return null;
+        },
+        querySelector(sel) {
+            if (sel.startsWith('#')) {
+                return this.getElementById(sel.slice(1));
+            }
+            return null;
+        },
+        querySelectorAll() {
+            return [];
+        },
+        setAttribute(k, v) {
+            attributes[k] = String(v);
+            if (k === 'id') this.id = String(v);
+        },
+        getAttribute(k) {
+            return attributes[k] || null;
+        },
+        addEventListener(type, fn) {
+            if (!listeners[type]) listeners[type] = [];
+            listeners[type].push(fn);
+        },
+        dispatchEvent(ev) {
+            const list = listeners[ev.type] || [];
+            for (const fn of list) {
+                fn.call(this, ev);
+            }
+        },
+        click() {
+            this.dispatchEvent({ type: 'click', target: this, currentTarget: this, preventDefault() {}, stopPropagation() {} });
+        },
+        change(newValue, newChecked) {
+            if (newValue !== undefined) this.value = newValue;
+            if (newChecked !== undefined) this.checked = newChecked;
+            this.dispatchEvent({ type: 'change', target: this, currentTarget: this, preventDefault() {}, stopPropagation() {} });
+        }
+    };
+    return node;
+}
+
+const body = createMockNode('BODY');
+const documentElement = createMockNode('HTML');
+const document = {
+    readyState: 'complete',
+    get hidden() { return nativeHidden; },
+    get visibilityState() { return nativeVisibilityState; },
+    body: body,
+    documentElement: documentElement,
+    addEventListener(type, listener, options) {
+        const capture = typeof options === 'boolean' ? options : !!(options && options.capture);
+        docListeners.push({ type, listener, capture });
+    },
+    dispatchVisibilityChange() {
+        let stopped = false;
+        const event = {
+            type: 'visibilitychange',
+            stopImmediatePropagation() { stopped = true; },
+            stopPropagation() { stopped = true; },
+            preventDefault() {}
+        };
+        const sorted = docListeners
+            .filter(l => l.type === 'visibilitychange')
+            .sort((a, b) => (b.capture ? 1 : 0) - (a.capture ? 1 : 0));
+        for (const item of sorted) {
+            if (stopped) break;
+            item.listener(event);
+        }
+    },
+    createElement: (tag) => createMockNode(tag),
+    getElementById: (id) => body.getElementById(id) || documentElement.getElementById(id),
+    querySelectorAll: () => []
+};
+
+const window = {
+    performance: { now: () => now },
+    requestAnimationFrame: (cb) => {
+        const id = nextNativeRafId++;
+        nativeRafCallbacks.push({ id, cb });
+        return id;
+    },
+    cancelAnimationFrame: (id) => {
+        nativeRafCallbacks = nativeRafCallbacks.filter(item => item.id !== id);
+    },
+    setTimeout: (cb, delay) => {
+        const id = nextTimerId++;
+        timers.push({ id, cb, runAt: now + Math.max(0, delay || 0) });
+        return id;
+    },
+    clearTimeout: (id) => {
+        timers = timers.filter(item => item.id !== id);
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    addEventListener(type, listener, options) {
+        const capture = typeof options === 'boolean' ? options : !!(options && options.capture);
+        winListeners.push({ type, listener, capture });
+    },
+    dispatchEvent: () => true,
+    CustomEvent: class CustomEvent { constructor(type, opts) { this.type = type; this.detail = opts ? opts.detail : undefined; } },
+    ipc: {
+        postMessage(raw) {
+            ipcMessages.push(JSON.parse(raw));
+        }
+    },
+    document: document
+};
+globalThis.window = window;
+globalThis.document = document;
+globalThis.performance = window.performance;
+globalThis.requestAnimationFrame = (...args) => window.requestAnimationFrame(...args);
+globalThis.cancelAnimationFrame = (...args) => window.cancelAnimationFrame(...args);
+globalThis.setTimeout = window.setTimeout;
+globalThis.clearTimeout = window.clearTimeout;
+globalThis.CustomEvent = window.CustomEvent;
+
+function stepNativeFrame(dtMs) {
+    now += dtMs;
+    const dueTimers = timers.filter(t => t.runAt <= now);
+    timers = timers.filter(t => t.runAt > now);
+    for (const t of dueTimers) {
+        t.cb();
+    }
+    const batch = nativeRafCallbacks.slice();
+    nativeRafCallbacks = [];
+    for (const item of batch) {
+        item.cb(now);
+    }
+}
+
+function dispatchKey(type, key, opts = {}) {
+    let immediateStopped = false;
+    let defaultPrevented = false;
+    const event = {
+        type,
+        key,
+        code: opts.code || key,
+        ctrlKey: !!opts.ctrlKey,
+        altKey: !!opts.altKey,
+        shiftKey: !!opts.shiftKey,
+        metaKey: !!opts.metaKey,
+        repeat: !!opts.repeat,
+        preventDefault() { defaultPrevented = true; },
+        stopImmediatePropagation() { immediateStopped = true; },
+        stopPropagation() { immediateStopped = true; }
+    };
+    const all = [
+        ...winListeners.filter(l => l.type === type && l.capture),
+        ...docListeners.filter(l => l.type === type && l.capture),
+        ...winListeners.filter(l => l.type === type && !l.capture),
+        ...docListeners.filter(l => l.type === type && !l.capture),
+    ];
+    for (const item of all) {
+        if (immediateStopped) break;
+        item.listener(event);
+    }
+    return { immediateStopped, defaultPrevented };
+}
+"#;
+
+fn run_node_with_dom(test_name: &str, init_script: &str, test_body: &str) -> String {
+    let full_script = format!("{MOCK_DOM_PREAMBLE}\n{init_script}\n{test_body}");
+    let output = std::process::Command::new("node")
+        .arg("-e")
+        .arg(&full_script)
+        .output()
+        .expect("run node test");
+    assert!(
+        output.status.success(),
+        "node {test_name} failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
 #[test]
 fn initializes_default_client_settings_and_game_view_url_when_config_missing() {
     let dir = tempdir().expect("tempdir");
@@ -79,8 +307,66 @@ fn falls_back_to_defaults_when_settings_file_is_corrupted_and_provides_persisten
     assert_eq!(controller.data_dir(), data_dir.path());
 
     let os_paths = blockidle_app::AppPaths::resolve().expect("resolve standard OS paths");
-    assert!(os_paths.config_dir.ends_with("blockidle") || os_paths.config_dir.ends_with("Blockidle") || !os_paths.config_dir.as_os_str().is_empty());
+    assert!(
+        os_paths.config_dir.ends_with("blockidle")
+            || os_paths.config_dir.ends_with("Blockidle")
+            || !os_paths.config_dir.as_os_str().is_empty()
+    );
     assert!(!os_paths.data_dir.as_os_str().is_empty());
+}
+
+#[test]
+fn falls_back_to_defaults_and_persists_clean_settings_when_settings_json_has_invalid_or_duplicate_keybindings() {
+    let dir = tempdir().expect("tempdir");
+    let settings_path = dir.path().join("settings.json");
+
+    // 1. Invalid keybinding ("Escape" is reserved for cancelling/closing overlay)
+    std::fs::write(
+        &settings_path,
+        r#"{
+            "foreground_fps_cap": "Fps60",
+            "keybindings": {
+                "toggle_settings_overlay": "Escape",
+                "toggle_fps_hud": "F3",
+                "reload_game_view": "F5",
+                "hide_to_tray": "F9",
+                "toggle_audio_mute": "F10",
+                "toggle_fullscreen": "F11"
+            }
+        }"#,
+    )
+    .expect("write invalid keybinding settings");
+
+    let controller = ClientController::load_or_default(dir.path());
+    assert_eq!(controller.settings(), &ClientSettings::default());
+    let persisted_after_invalid: ClientSettings =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).expect("read persisted"))
+            .expect("parse persisted clean settings");
+    assert_eq!(persisted_after_invalid, ClientSettings::default());
+
+    // 2. Duplicate keybinding (two actions bound to "F2")
+    std::fs::write(
+        &settings_path,
+        r#"{
+            "foreground_fps_cap": "Fps120",
+            "keybindings": {
+                "toggle_settings_overlay": "F2",
+                "toggle_fps_hud": "f2",
+                "reload_game_view": "F5",
+                "hide_to_tray": "F9",
+                "toggle_audio_mute": "F10",
+                "toggle_fullscreen": "F11"
+            }
+        }"#,
+    )
+    .expect("write duplicate keybinding settings");
+
+    let controller_dup = ClientController::load_or_default(dir.path());
+    assert_eq!(controller_dup.settings(), &ClientSettings::default());
+    let persisted_after_dup: ClientSettings =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).expect("read persisted"))
+            .expect("parse persisted clean settings");
+    assert_eq!(persisted_after_dup, ClientSettings::default());
 }
 
 #[test]
@@ -199,11 +485,11 @@ fn tray_actions_hide_and_restore_window_switching_between_background_and_foregro
     controller.update_settings(settings).expect("update settings");
 
     assert!(controller.is_window_visible());
-    assert_eq!(controller.active_fps_cap(), Some(144));
+    assert_eq!(controller.effective_fps_cap(), Some(144));
 
     let hide_effects = controller.handle_tray_action(TrayAction::Hide);
     assert!(!controller.is_window_visible());
-    assert_eq!(controller.active_fps_cap(), Some(5));
+    assert_eq!(controller.effective_fps_cap(), Some(5));
     assert!(hide_effects.contains(&PlatformEffect::SetWindowVisible(false)));
     assert!(hide_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
         window_visible: false,
@@ -212,12 +498,12 @@ fn tray_actions_hide_and_restore_window_switching_between_background_and_foregro
     assert!(
         hide_effects
             .iter()
-            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"active_fps_cap\":5")))
+            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"effective_fps_cap\":5")))
     );
 
     let show_effects = controller.handle_tray_action(TrayAction::Show);
     assert!(controller.is_window_visible());
-    assert_eq!(controller.active_fps_cap(), Some(144));
+    assert_eq!(controller.effective_fps_cap(), Some(144));
     assert!(show_effects.contains(&PlatformEffect::SetWindowVisible(true)));
     assert!(show_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
         window_visible: true,
@@ -226,17 +512,32 @@ fn tray_actions_hide_and_restore_window_switching_between_background_and_foregro
     assert!(
         show_effects
             .iter()
-            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"active_fps_cap\":144")))
+            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"effective_fps_cap\":144")))
+    );
+
+    // Minimizing prior to hiding to tray and then restoring from tray clears minimized state and restores Foreground FPS Cap
+    controller.handle_minimized_changed(true);
+    assert_eq!(controller.effective_fps_cap(), Some(5));
+    controller.handle_tray_action(TrayAction::Hide);
+    assert_eq!(controller.effective_fps_cap(), Some(5));
+    let restore_after_min_effects = controller.handle_tray_action(TrayAction::Show);
+    assert!(controller.is_window_visible());
+    assert!(!controller.webview_state().window_minimized);
+    assert_eq!(controller.effective_fps_cap(), Some(144));
+    assert!(
+        restore_after_min_effects
+            .iter()
+            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"effective_fps_cap\":144") && script.contains("\"window_minimized\":false")))
     );
 
     let toggle_hide_effects = controller.handle_tray_action(TrayAction::ToggleWindowVisibility);
     assert!(!controller.is_window_visible());
-    assert_eq!(controller.active_fps_cap(), Some(5));
+    assert_eq!(controller.effective_fps_cap(), Some(5));
     assert!(toggle_hide_effects.contains(&PlatformEffect::SetWindowVisible(false)));
 
     let toggle_show_effects = controller.handle_tray_action(TrayAction::ToggleWindowVisibility);
     assert!(controller.is_window_visible());
-    assert_eq!(controller.active_fps_cap(), Some(144));
+    assert_eq!(controller.effective_fps_cap(), Some(144));
     assert!(toggle_show_effects.contains(&PlatformEffect::SetWindowVisible(true)));
 
     let quit_effects = controller.handle_tray_action(TrayAction::Quit);
@@ -261,11 +562,11 @@ fn close_requested_exits_when_close_to_tray_disabled_and_hides_to_tray_when_enab
     settings.background_fps_cap = BackgroundFpsCap::Fps0;
     controller.update_settings(settings).expect("save settings");
 
-    assert_eq!(controller.active_fps_cap(), Some(60));
+    assert_eq!(controller.effective_fps_cap(), Some(60));
 
     let close_effects = controller.handle_close_requested();
     assert!(!controller.is_window_visible());
-    assert_eq!(controller.active_fps_cap(), Some(0));
+    assert_eq!(controller.effective_fps_cap(), Some(0));
     assert!(!close_effects.contains(&PlatformEffect::ExitApp));
     assert!(close_effects.contains(&PlatformEffect::SetWindowVisible(false)));
     assert!(close_effects.contains(&PlatformEffect::UpdateTrayMenu(TrayMenuState {
@@ -275,7 +576,7 @@ fn close_requested_exits_when_close_to_tray_disabled_and_hides_to_tray_when_enab
     assert!(
         close_effects
             .iter()
-            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"active_fps_cap\":0") && script.contains("\"window_visible\":false")))
+            .any(|effect| matches!(effect, PlatformEffect::SyncWebViewState(script) if script.contains("\"effective_fps_cap\":0") && script.contains("\"window_visible\":false")))
     );
 }
 
@@ -416,89 +717,8 @@ fn initialization_script_enforces_raf_pacing_zero_fps_pause_and_flush_and_cancel
     assert!(init_script.contains("requestAnimationFrame"));
     assert!(init_script.contains("cancelAnimationFrame"));
 
-    let test_harness = format!(
+    let test_body = format!(
         r#"
-let now = 1000;
-let nativeRafCallbacks = [];
-let nextNativeRafId = 1;
-let timers = [];
-let nextTimerId = 1;
-
-const window = {{
-    performance: {{ now: () => now }},
-    requestAnimationFrame: (cb) => {{
-        const id = nextNativeRafId++;
-        nativeRafCallbacks.push({{ id, cb }});
-        return id;
-    }},
-    cancelAnimationFrame: (id) => {{
-        nativeRafCallbacks = nativeRafCallbacks.filter(item => item.id !== id);
-    }},
-    setTimeout: (cb, delay) => {{
-        const id = nextTimerId++;
-        timers.push({{ id, cb, runAt: now + Math.max(0, delay || 0) }});
-        return id;
-    }},
-    clearTimeout: (id) => {{
-        timers = timers.filter(item => item.id !== id);
-    }},
-    addEventListener: () => {{}},
-    dispatchEvent: () => true,
-    CustomEvent: class CustomEvent {{ constructor(type, opts) {{ this.type = type; this.detail = opts ? opts.detail : undefined; }} }},
-    ipc: {{ postMessage: () => {{}} }}
-}};
-globalThis.window = window;
-globalThis.performance = window.performance;
-globalThis.requestAnimationFrame = (...args) => window.requestAnimationFrame(...args);
-globalThis.cancelAnimationFrame = (...args) => window.cancelAnimationFrame(...args);
-globalThis.setTimeout = window.setTimeout;
-globalThis.clearTimeout = window.clearTimeout;
-globalThis.CustomEvent = window.CustomEvent;
-
-const mockShadowRoot = {{
-    innerHTML: '',
-    appendChild: () => {{}},
-    getElementById: () => null,
-    querySelector: () => null,
-}};
-const mockElement = () => ({{
-    id: '',
-    style: {{}},
-    textContent: '',
-    innerHTML: '',
-    attachShadow: () => mockShadowRoot,
-    appendChild: () => {{}},
-    setAttribute: () => {{}},
-}});
-const document = {{
-    readyState: 'complete',
-    hidden: false,
-    visibilityState: 'visible',
-    addEventListener: () => {{}},
-    createElement: mockElement,
-    getElementById: () => null,
-    documentElement: mockElement(),
-    body: mockElement(),
-}};
-globalThis.document = document;
-window.document = document;
-
-function stepNativeFrame(dtMs) {{
-    now += dtMs;
-    const dueTimers = timers.filter(t => t.runAt <= now);
-    timers = timers.filter(t => t.runAt > now);
-    for (const t of dueTimers) {{
-        t.cb();
-    }}
-    const batch = nativeRafCallbacks.slice();
-    nativeRafCallbacks = [];
-    for (const item of batch) {{
-        item.cb(now);
-    }}
-}}
-
-{init_script}
-
 // 1. At 60 FPS cap (interval ~16.666ms), a recursive game loop running on a 240Hz display (4ms native ticks)
 // should only fire ~60 times over 1000ms (not 250 times).
 let deliveredFrames = 0;
@@ -526,6 +746,27 @@ if (cancelledFired) {{
     throw new Error('Cancelled requestAnimationFrame callback should not have fired');
 }}
 
+// 2b. CancelAnimationFrame called inside callback A cancels callback B in the same frame batch
+let callbackAFired = false;
+let callbackBFired = false;
+let idB = null;
+window.requestAnimationFrame(() => {{
+    callbackAFired = true;
+    window.cancelAnimationFrame(idB);
+}});
+idB = window.requestAnimationFrame(() => {{
+    callbackBFired = true;
+}});
+for (let i = 0; i < 10; i++) {{
+    stepNativeFrame(20);
+}}
+if (!callbackAFired) {{
+    throw new Error('Expected callback A to fire');
+}}
+if (callbackBFired) {{
+    throw new Error('Expected callback B cancelled by callback A in the same batch not to fire');
+}}
+
 // 3. Switching to 0 FPS background cap pauses callbacks completely
 const beforePause = deliveredFrames;
 {unfocus_sync_script}
@@ -546,17 +787,7 @@ console.log('RAF_TEST_OK');
 "#
     );
 
-    let output = std::process::Command::new("node")
-        .arg("-e")
-        .arg(&test_harness)
-        .output()
-        .expect("run node to verify initialization script");
-    assert!(
-        output.status.success(),
-        "node test failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    run_node_with_dom("raf", &init_script, &test_body);
 }
 
 #[test]
@@ -634,69 +865,8 @@ fn initialization_script_enforces_keep_awake_visibility_suppression_when_enabled
     assert!(init_script.contains("visibilitychange"));
     assert!(init_script.contains("visibilityState"));
 
-    let test_harness = format!(
+    let test_body = format!(
         r#"
-let nativeHidden = false;
-let nativeVisibilityState = 'visible';
-const docListeners = [];
-
-const document = {{
-    readyState: 'complete',
-    get hidden() {{ return nativeHidden; }},
-    get visibilityState() {{ return nativeVisibilityState; }},
-    addEventListener(type, listener, options) {{
-        const capture = typeof options === 'boolean' ? options : !!(options && options.capture);
-        docListeners.push({{ type, listener, capture }});
-    }},
-    dispatchVisibilityChange() {{
-        let stopped = false;
-        const event = {{
-            type: 'visibilitychange',
-            stopImmediatePropagation() {{ stopped = true; }},
-            stopPropagation() {{ stopped = true; }},
-            preventDefault() {{}}
-        }};
-        const sorted = docListeners
-            .filter(l => l.type === 'visibilitychange')
-            .sort((a, b) => (b.capture ? 1 : 0) - (a.capture ? 1 : 0));
-        for (const item of sorted) {{
-            if (stopped) break;
-            item.listener(event);
-        }}
-    }},
-    createElement: () => ({{
-        id: '',
-        style: {{}},
-        textContent: '',
-        innerHTML: '',
-        attachShadow: () => ({{ innerHTML: '', appendChild: () => {{}}, getElementById: () => null, querySelector: () => null }}),
-        appendChild: () => {{}},
-        setAttribute: () => {{}}
-    }}),
-    getElementById: () => null,
-    documentElement: {{ appendChild: () => {{}} }},
-    body: {{ appendChild: () => {{}} }}
-}};
-
-const window = {{
-    performance: {{ now: () => 0 }},
-    requestAnimationFrame: () => 1,
-    cancelAnimationFrame: () => {{}},
-    setTimeout: () => 1,
-    clearTimeout: () => {{}},
-    addEventListener: () => {{}},
-    dispatchEvent: () => true,
-    CustomEvent: class CustomEvent {{ constructor(type, opts) {{ this.type = type; this.detail = opts ? opts.detail : undefined; }} }},
-    ipc: {{ postMessage: () => {{}} }},
-    document: document
-}};
-globalThis.window = window;
-globalThis.document = document;
-globalThis.performance = window.performance;
-globalThis.CustomEvent = window.CustomEvent;
-
-{init_script}
-
 let gameVisibilityCalls = 0;
 document.addEventListener('visibilitychange', () => {{
     gameVisibilityCalls++;
@@ -733,17 +903,7 @@ console.log('KEEP_AWAKE_OK');
 "#
     );
 
-    let output = std::process::Command::new("node")
-        .arg("-e")
-        .arg(&test_harness)
-        .output()
-        .expect("run node to verify keep awake");
-    assert!(
-        output.status.success(),
-        "node keep-awake test failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    run_node_with_dom("keep-awake", &init_script, &test_body);
 }
 
 #[test]
@@ -784,98 +944,8 @@ fn initialization_script_renders_shadow_dom_fps_hud_with_pointer_events_none_and
     assert!(init_script.contains("attachShadow"));
     assert!(init_script.contains("pointer-events: none"));
 
-    let test_harness = format!(
+    let test_body = format!(
         r#"
-let now = 1000;
-let nativeRafCallbacks = [];
-let nextNativeRafId = 1;
-
-function createMockNode(tagName) {{
-    const children = [];
-    const elementsById = new Map();
-    const node = {{
-        tagName: tagName || 'DIV',
-        id: '',
-        style: {{}},
-        textContent: '',
-        innerHTML: '',
-        children: children,
-        shadowRoot: null,
-        attachShadow(opts) {{
-            const root = createMockNode('SHADOW-ROOT');
-            root.mode = opts && opts.mode;
-            this.shadowRoot = root;
-            return root;
-        }},
-        appendChild(child) {{
-            children.push(child);
-            if (child && child.id) {{
-                elementsById.set(child.id, child);
-            }}
-            return child;
-        }},
-        getElementById(id) {{
-            if (elementsById.has(id)) return elementsById.get(id);
-            for (const c of children) {{
-                if (c.id === id) return c;
-                if (c.getElementById) {{
-                    const found = c.getElementById(id);
-                    if (found) return found;
-                }}
-            }}
-            return null;
-        }},
-        querySelector(sel) {{
-            if (sel.startsWith('#')) {{
-                return this.getElementById(sel.slice(1));
-            }}
-            return null;
-        }},
-        setAttribute() {{}}
-    }};
-    return node;
-}}
-
-const body = createMockNode('BODY');
-const documentElement = createMockNode('HTML');
-const document = {{
-    readyState: 'complete',
-    hidden: false,
-    visibilityState: 'visible',
-    body: body,
-    documentElement: documentElement,
-    addEventListener: () => {{}},
-    createElement: (tag) => createMockNode(tag),
-    getElementById: (id) => body.getElementById(id) || documentElement.getElementById(id),
-}};
-
-const window = {{
-    performance: {{ now: () => now }},
-    requestAnimationFrame: (cb) => {{
-        const id = nextNativeRafId++;
-        nativeRafCallbacks.push({{ id, cb }});
-        return id;
-    }},
-    cancelAnimationFrame: (id) => {{
-        nativeRafCallbacks = nativeRafCallbacks.filter(x => x.id !== id);
-    }},
-    setTimeout: () => 1,
-    clearTimeout: () => {{}},
-    setInterval: () => 1,
-    clearInterval: () => {{}},
-    addEventListener: () => {{}},
-    dispatchEvent: () => true,
-    CustomEvent: class CustomEvent {{ constructor(type, opts) {{ this.type = type; this.detail = opts ? opts.detail : undefined; }} }},
-    ipc: {{ postMessage: () => {{}} }},
-    document: document
-}};
-globalThis.window = window;
-globalThis.document = document;
-globalThis.performance = window.performance;
-globalThis.CustomEvent = window.CustomEvent;
-
-{init_script}
-
 const host = document.getElementById('blockidle-client-overlay-host');
 if (!host || !host.shadowRoot) {{
     throw new Error('Expected Shadow DOM host #blockidle-client-overlay-host to be mounted');
@@ -910,10 +980,7 @@ if (!hud.textContent.includes('0') && !hud.textContent.toLowerCase().includes('p
 {unlimited_script}
 for (let i = 0; i < 30; i++) {{
     window.requestAnimationFrame(() => {{}});
-    now += 10;
-    const batch = nativeRafCallbacks.slice();
-    nativeRafCallbacks = [];
-    for (const item of batch) item.cb(now);
+    stepNativeFrame(10);
 }}
 if (!hud.textContent.includes('30') || !hud.textContent.includes('Unlimited')) {{
     throw new Error('Expected FPS HUD to show 30 FPS and Unlimited cap, got: ' + hud.textContent);
@@ -922,17 +989,7 @@ console.log('HUD_TEST_OK');
 "#
     );
 
-    let output = std::process::Command::new("node")
-        .arg("-e")
-        .arg(&test_harness)
-        .output()
-        .expect("run node to verify shadow dom fps hud");
-    assert!(
-        output.status.success(),
-        "node fps-hud test failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    run_node_with_dom("fps-hud", &init_script, &test_body);
 }
 
 #[test]
@@ -1139,167 +1196,7 @@ fn initialization_script_renders_shadow_dom_settings_overlay_records_keybindings
     let mut controller = ClientController::load_or_default(dir.path());
     let init_script = controller.initialization_script();
 
-    let test_harness = format!(
-        r#"
-const ipcMessages = [];
-const winListeners = [];
-const docListeners = [];
-
-function createMockNode(tagName) {{
-    const children = [];
-    const elementsById = new Map();
-    const listeners = {{}};
-    const attributes = {{}};
-    const node = {{
-        tagName: (tagName || 'DIV').toUpperCase(),
-        id: '',
-        className: '',
-        type: '',
-        value: '',
-        checked: false,
-        disabled: false,
-        style: {{}},
-        dataset: {{}},
-        textContent: '',
-        innerHTML: '',
-        children: children,
-        shadowRoot: null,
-        attachShadow(opts) {{
-            const root = createMockNode('SHADOW-ROOT');
-            root.mode = opts && opts.mode;
-            this.shadowRoot = root;
-            return root;
-        }},
-        appendChild(child) {{
-            children.push(child);
-            if (child && child.id) {{
-                elementsById.set(child.id, child);
-            }}
-            return child;
-        }},
-        getElementById(id) {{
-            if (elementsById.has(id)) return elementsById.get(id);
-            for (const c of children) {{
-                if (c.id === id) return c;
-                if (c.getElementById) {{
-                    const found = c.getElementById(id);
-                    if (found) return found;
-                }}
-            }}
-            return null;
-        }},
-        querySelector(sel) {{
-            if (sel.startsWith('#')) {{
-                return this.getElementById(sel.slice(1));
-            }}
-            return null;
-        }},
-        querySelectorAll() {{
-            return [];
-        }},
-        setAttribute(k, v) {{
-            attributes[k] = String(v);
-            if (k === 'id') this.id = String(v);
-        }},
-        getAttribute(k) {{
-            return attributes[k] || null;
-        }},
-        addEventListener(type, fn) {{
-            if (!listeners[type]) listeners[type] = [];
-            listeners[type].push(fn);
-        }},
-        dispatchEvent(ev) {{
-            const list = listeners[ev.type] || [];
-            for (const fn of list) {{
-                fn.call(this, ev);
-            }}
-        }},
-        click() {{
-            this.dispatchEvent({{ type: 'click', target: this, currentTarget: this, preventDefault() {{}}, stopPropagation() {{}} }});
-        }},
-        change(newValue, newChecked) {{
-            if (newValue !== undefined) this.value = newValue;
-            if (newChecked !== undefined) this.checked = newChecked;
-            this.dispatchEvent({{ type: 'change', target: this, currentTarget: this, preventDefault() {{}}, stopPropagation() {{}} }});
-        }}
-    }};
-    return node;
-}}
-
-const body = createMockNode('BODY');
-const documentElement = createMockNode('HTML');
-const document = {{
-    readyState: 'complete',
-    hidden: false,
-    visibilityState: 'visible',
-    body: body,
-    documentElement: documentElement,
-    addEventListener(type, listener, options) {{
-        const capture = typeof options === 'boolean' ? options : !!(options && options.capture);
-        docListeners.push({{ type, listener, capture }});
-    }},
-    createElement: (tag) => createMockNode(tag),
-    getElementById: (id) => body.getElementById(id) || documentElement.getElementById(id),
-    querySelectorAll: () => []
-}};
-
-const window = {{
-    performance: {{ now: () => 1000 }},
-    requestAnimationFrame: () => 1,
-    cancelAnimationFrame: () => {{}},
-    setTimeout: () => 1,
-    clearTimeout: () => {{}},
-    setInterval: () => 1,
-    clearInterval: () => {{}},
-    addEventListener(type, listener, options) {{
-        const capture = typeof options === 'boolean' ? options : !!(options && options.capture);
-        winListeners.push({{ type, listener, capture }});
-    }},
-    dispatchEvent: () => true,
-    CustomEvent: class CustomEvent {{ constructor(type, opts) {{ this.type = type; this.detail = opts ? opts.detail : undefined; }} }},
-    ipc: {{
-        postMessage(raw) {{
-            ipcMessages.push(JSON.parse(raw));
-        }}
-    }},
-    document: document
-}};
-globalThis.window = window;
-globalThis.document = document;
-globalThis.performance = window.performance;
-globalThis.CustomEvent = window.CustomEvent;
-
-function dispatchKey(type, key, opts = {{}}) {{
-    let immediateStopped = false;
-    let defaultPrevented = false;
-    const event = {{
-        type,
-        key,
-        code: opts.code || key,
-        ctrlKey: !!opts.ctrlKey,
-        altKey: !!opts.altKey,
-        shiftKey: !!opts.shiftKey,
-        metaKey: !!opts.metaKey,
-        repeat: !!opts.repeat,
-        preventDefault() {{ defaultPrevented = true; }},
-        stopImmediatePropagation() {{ immediateStopped = true; }},
-        stopPropagation() {{ immediateStopped = true; }}
-    }};
-    const all = [
-        ...winListeners.filter(l => l.type === type && l.capture),
-        ...docListeners.filter(l => l.type === type && l.capture),
-        ...winListeners.filter(l => l.type === type && !l.capture),
-        ...docListeners.filter(l => l.type === type && !l.capture),
-    ];
-    for (const item of all) {{
-        if (immediateStopped) break;
-        item.listener(event);
-    }}
-    return {{ immediateStopped, defaultPrevented }};
-}}
-
-{init_script}
-
+    let test_body = r#"
 // Register simulated game keydown/keyup listeners in bubble phase (like blockidle.io js/entrada.js)
 let gameKeyEvents = [];
 window.addEventListener('keydown', (e) => gameKeyEvents.push('down:' + e.key), false);
@@ -1308,42 +1205,68 @@ window.addEventListener('keyup', (e) => gameKeyEvents.push('up:' + e.key), false
 const host = document.getElementById('blockidle-client-overlay-host');
 const shadow = host.shadowRoot;
 const overlay = shadow.getElementById('blockidle-settings-overlay');
-if (!overlay) {{
+if (!overlay) {
     throw new Error('Expected #blockidle-settings-overlay inside Shadow DOM');
-}}
-if (overlay.style.display !== 'none') {{
+}
+if (overlay.style.display !== 'none') {
     throw new Error('Expected Settings Overlay to be hidden initially');
-}}
+}
 
-// When overlay is closed, pressing game key 'w' reaches the game
+// When overlay is closed, pressing game key 'w' (including repeat) reaches the game
 dispatchKey('keydown', 'w');
+dispatchKey('keydown', 'w', { repeat: true });
 dispatchKey('keyup', 'w');
-if (gameKeyEvents.length !== 2) {{
-    throw new Error('Expected game key w to reach game when overlay is closed');
-}}
+if (gameKeyEvents.length !== 3) {
+    throw new Error('Expected game key w (including repeat) to reach game when overlay is closed');
+}
 gameKeyEvents = [];
+
+// When overlay is closed, a repeat keydown on a bound shortcut (F3) is consumed without triggering the action
+const ipcBeforeRepeatF3 = ipcMessages.length;
+const repeatF3Closed = dispatchKey('keydown', 'F3', { repeat: true });
+dispatchKey('keyup', 'F3');
+if (!repeatF3Closed.immediateStopped || !repeatF3Closed.defaultPrevented) {
+    throw new Error('Expected repeat F3 keydown to be consumed');
+}
+if (ipcMessages.length !== ipcBeforeRepeatF3) {
+    throw new Error('Expected repeat F3 keydown not to emit trigger_keybinding IPC');
+}
 
 // Pressing F2 opens the Settings Overlay and consumes the key event
 const f2Res = dispatchKey('keydown', 'F2');
-dispatchKey('keyup', 'F2');
-if (!f2Res.immediateStopped || !f2Res.defaultPrevented) {{
+if (!f2Res.immediateStopped || !f2Res.defaultPrevented) {
     throw new Error('Expected F2 keydown to be consumed in capture phase');
-}}
-if (gameKeyEvents.length !== 0) {{
+}
+if (gameKeyEvents.length !== 0) {
     throw new Error('Expected F2 not to leak to game listeners');
-}}
-if (overlay.style.display === 'none') {{
+}
+if (overlay.style.display === 'none') {
     throw new Error('Expected Settings Overlay to open on F2');
-}}
+}
+
+// Holding F2 or Escape (event.repeat = true) while Settings Overlay is open is consumed without closing/toggling
+const ipcBeforeRepeatWhileOpen = ipcMessages.length;
+const repeatF2Open = dispatchKey('keydown', 'F2', { repeat: true });
+const repeatEscOpen = dispatchKey('keydown', 'Escape', { repeat: true });
+dispatchKey('keyup', 'F2');
+if (!repeatF2Open.immediateStopped || !repeatF2Open.defaultPrevented || !repeatEscOpen.immediateStopped || !repeatEscOpen.defaultPrevented) {
+    throw new Error('Expected repeat F2/Escape while Settings Overlay is open to be consumed');
+}
+if (overlay.style.display === 'none') {
+    throw new Error('Expected repeat F2/Escape not to close Settings Overlay');
+}
+if (ipcMessages.length !== ipcBeforeRepeatWhileOpen) {
+    throw new Error('Expected repeat F2/Escape while open not to emit IPC');
+}
 
 // While Settings Overlay is open, pressing game keys ('w', 'e', ' ') is consumed and does not reach the game
 dispatchKey('keydown', 'w');
 dispatchKey('keyup', 'w');
 dispatchKey('keydown', 'e');
 dispatchKey('keyup', 'e');
-if (gameKeyEvents.length !== 0) {{
+if (gameKeyEvents.length !== 0) {
     throw new Error('Expected game keys to be consumed while Settings Overlay is open, got: ' + JSON.stringify(gameKeyEvents));
-}}
+}
 
 // Controls for Foreground FPS Cap, Background FPS Cap, and all 5 toggles exist and emit update_settings IPC
 const fgSelect = shadow.getElementById('blockidle-fg-fps-select');
@@ -1354,9 +1277,9 @@ const closeToTrayToggle = shadow.getElementById('blockidle-toggle-close-to-tray'
 const muteToggle = shadow.getElementById('blockidle-toggle-audio-mute');
 const fullscreenToggle = shadow.getElementById('blockidle-toggle-fullscreen');
 
-if (!fgSelect || !bgSelect || !hudToggle || !keepAwakeToggle || !closeToTrayToggle || !muteToggle || !fullscreenToggle) {{
+if (!fgSelect || !bgSelect || !hudToggle || !keepAwakeToggle || !closeToTrayToggle || !muteToggle || !fullscreenToggle) {
     throw new Error('Missing one or more required controls in Settings Overlay');
-}}
+}
 
 fgSelect.change('Fps144');
 bgSelect.change('Fps0');
@@ -1374,95 +1297,83 @@ if (!lastSettingsMsg ||
     lastSettingsMsg.settings.keep_awake !== false ||
     lastSettingsMsg.settings.close_to_tray !== true ||
     lastSettingsMsg.settings.audio_muted !== true ||
-    lastSettingsMsg.settings.fullscreen !== true) {{
+    lastSettingsMsg.settings.fullscreen !== true) {
     throw new Error('Expected update_settings IPC to reflect all overlay control changes, got: ' + JSON.stringify(lastSettingsMsg));
-}}
+}
 
 // Interactive Keybinding recording:
 // 1. Click Toggle FPS HUD keybinding button -> enters recording mode, Escape cancels recording WITHOUT closing overlay
 const hudKeyBtn = shadow.getElementById('blockidle-keybind-toggle_fps_hud');
-if (!hudKeyBtn) {{
+if (!hudKeyBtn) {
     throw new Error('Missing #blockidle-keybind-toggle_fps_hud button');
-}}
+}
 hudKeyBtn.click();
-if (!hudKeyBtn.textContent.toLowerCase().includes('press')) {{
+if (!hudKeyBtn.textContent.toLowerCase().includes('press')) {
     throw new Error('Expected keybinding button to show recording prompt, got: ' + hudKeyBtn.textContent);
-}}
+}
 dispatchKey('keydown', 'Escape');
 dispatchKey('keyup', 'Escape');
-if (overlay.style.display === 'none') {{
+if (overlay.style.display === 'none') {
     throw new Error('Expected Escape during shortcut recording to cancel recording without closing the Settings Overlay');
-}}
-if (hudKeyBtn.textContent !== 'F3') {{
+}
+if (hudKeyBtn.textContent !== 'F3') {
     throw new Error('Expected cancelled recording to restore F3 label, got: ' + hudKeyBtn.textContent);
-}}
-if (gameKeyEvents.length !== 0) {{
+}
+if (gameKeyEvents.length !== 0) {
     throw new Error('Expected Escape during recording not to leak to game');
-}}
+}
 
 // 2. Record a conflicting shortcut (F2 is already ToggleSettingsOverlay) -> prevented
 hudKeyBtn.click();
 dispatchKey('keydown', 'F2');
 dispatchKey('keyup', 'F2');
-if (hudKeyBtn.textContent !== 'F3') {{
+if (hudKeyBtn.textContent !== 'F3') {
     throw new Error('Expected conflicting shortcut F2 to be rejected and keep F3, got: ' + hudKeyBtn.textContent);
-}}
+}
 
 // 3. Record a valid modifier combination Ctrl+Shift+H -> updates button and emits update_keybinding IPC
 hudKeyBtn.click();
-dispatchKey('keydown', 'Control', {{ ctrlKey: true }});
-dispatchKey('keydown', 'Shift', {{ ctrlKey: true, shiftKey: true }});
-dispatchKey('keydown', 'h', {{ ctrlKey: true, shiftKey: true }});
-dispatchKey('keyup', 'h', {{ ctrlKey: true, shiftKey: true }});
-if (hudKeyBtn.textContent !== 'Ctrl+Shift+H') {{
+dispatchKey('keydown', 'Control', { ctrlKey: true });
+dispatchKey('keydown', 'Shift', { ctrlKey: true, shiftKey: true });
+dispatchKey('keydown', 'h', { ctrlKey: true, shiftKey: true });
+dispatchKey('keyup', 'h', { ctrlKey: true, shiftKey: true });
+if (hudKeyBtn.textContent !== 'Ctrl+Shift+H') {
     throw new Error('Expected recorded shortcut to be Ctrl+Shift+H, got: ' + hudKeyBtn.textContent);
-}}
+}
 const kbMsg = [...ipcMessages].reverse().find(m => m.type === 'update_keybinding');
-if (!kbMsg || kbMsg.action !== 'toggle_fps_hud' || kbMsg.shortcut !== 'Ctrl+Shift+H') {{
+if (!kbMsg || kbMsg.action !== 'toggle_fps_hud' || kbMsg.shortcut !== 'Ctrl+Shift+H') {
     throw new Error('Expected update_keybinding IPC for toggle_fps_hud=Ctrl+Shift+H, got: ' + JSON.stringify(kbMsg));
-}}
+}
 
 // 4. Restore Defaults button resets shortcuts to F2/F3/F5/F9/F10/F11 and emits restore_default_keybindings
 const restoreBtn = shadow.getElementById('blockidle-restore-defaults');
-if (!restoreBtn) {{
+if (!restoreBtn) {
     throw new Error('Missing #blockidle-restore-defaults button');
-}}
+}
 restoreBtn.click();
-if (hudKeyBtn.textContent !== 'F3') {{
+if (hudKeyBtn.textContent !== 'F3') {
     throw new Error('Expected Restore Defaults to reset toggle_fps_hud button to F3, got: ' + hudKeyBtn.textContent);
-}}
-if (!ipcMessages.some(m => m.type === 'restore_default_keybindings')) {{
+}
+if (!ipcMessages.some(m => m.type === 'restore_default_keybindings')) {
     throw new Error('Expected restore_default_keybindings IPC message');
-}}
+}
 
 // 5. Pressing Escape when not recording closes the Settings Overlay without leaking Escape to the game
 dispatchKey('keydown', 'Escape');
 dispatchKey('keyup', 'Escape');
-if (overlay.style.display !== 'none') {{
+if (overlay.style.display !== 'none') {
     throw new Error('Expected Escape to close Settings Overlay when not recording');
-}}
-if (gameKeyEvents.length !== 0) {{
+}
+if (gameKeyEvents.length !== 0) {
     throw new Error('Expected Escape closing overlay not to leak to game, got: ' + JSON.stringify(gameKeyEvents));
-}}
+}
 
 console.log(JSON.stringify(ipcMessages));
-"#
-    );
+"#;
 
-    let output = std::process::Command::new("node")
-        .arg("-e")
-        .arg(&test_harness)
-        .output()
-        .expect("run node to verify shadow dom settings overlay");
-    assert!(
-        output.status.success(),
-        "node settings-overlay test failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let stdout = run_node_with_dom("settings-overlay", &init_script, test_body);
 
     // Feed emitted IPC messages from the overlay into ClientController and verify end-to-end state & persistence
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let last_line = stdout.lines().last().expect("json line");
     let messages: Vec<serde_json::Value> = serde_json::from_str(last_line).expect("parse ipc list");
     for msg in messages {
@@ -1479,10 +1390,3 @@ console.log(JSON.stringify(ipcMessages));
     assert!(controller.settings().fullscreen);
     assert_eq!(controller.settings().keybindings, Keybindings::default());
 }
-
-
-
-
-
-
-

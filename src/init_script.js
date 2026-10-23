@@ -217,9 +217,13 @@
             const act = KEYBIND_ACTIONS[i].key;
             const btn = keybindButtons[act];
             if (btn) {
-                btn.textContent = (recordingAction === act)
+                const isRec = (recordingAction === act);
+                btn.textContent = isRec
                     ? 'Press a key...'
                     : (kb[act] || DEFAULT_KEYBINDINGS[act]);
+                if (btn.classList) {
+                    btn.classList.toggle('bi-recording', isRec);
+                }
             }
         }
         if (keybindStatusElement) {
@@ -285,22 +289,63 @@
             styleEl = document.createElement('style');
             styleEl.id = 'blockidle-overlay-style';
             styleEl.textContent =
-                '#blockidle-fps-hud { position: fixed; top: 12px; left: 12px; padding: 6px 10px; ' +
-                'background: rgba(15, 18, 24, 0.78); color: #e6edf3; font-family: monospace; ' +
-                'font-size: 12px; font-weight: 600; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.14); ' +
-                'pointer-events: none; user-select: none; z-index: 2147483647; } ' +
+                '#blockidle-fps-hud { position: fixed; top: 10px; left: 10px; padding: 4px 8px; ' +
+                'background: rgba(0, 0, 0, 0.62); color: #ffffff; font-family: "Monocraft", monospace; ' +
+                'font-size: 12px; border: 2px solid; border-color: #373737 #555555 #555555 #373737; ' +
+                'text-shadow: 2px 2px 0 #000; border-radius: 0; pointer-events: none; user-select: none; ' +
+                'z-index: 2147483647; image-rendering: pixelated; } ' +
                 '#blockidle-settings-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; ' +
-                'background: rgba(8, 10, 15, 0.72); display: none; align-items: center; justify-content: center; ' +
-                'font-family: system-ui, -apple-system, sans-serif; color: #e6edf3; z-index: 2147483647; pointer-events: auto; } ' +
-                '#blockidle-settings-panel { width: 460px; max-width: 92vw; max-height: 88vh; overflow-y: auto; ' +
-                'background: #131722; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 12px; padding: 20px; ' +
-                'box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6); } ' +
-                '.bi-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.06); } ' +
-                '.bi-btn, select { background-color: #1f2637; color: #e6edf3; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px; } ' +
-                'select { -webkit-appearance: none; appearance: none; color-scheme: dark; ' +
-                'background-image: url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'10\' height=\'6\' viewBox=\'0 0 10 6\'%3E%3Cpath fill=\'%23e6edf3\' d=\'M0 0h10L5 6z\'/%3E%3C/svg%3E"); ' +
-                'background-repeat: no-repeat; background-position: right 8px center; background-size: 8px 5px; padding-right: 26px; } ' +
-                'select option { background-color: #1f2637; color: #e6edf3; }';
+                'background: rgba(0, 0, 0, 0.65); display: none; align-items: center; justify-content: center; ' +
+                'font-family: "Monocraft", monospace; color: #2a2a2a; z-index: 2147483647; pointer-events: auto; ' +
+                'image-rendering: pixelated; } ' +
+                '#blockidle-settings-panel { width: 480px; max-width: 94vw; max-height: 88vh; overflow-y: auto; ' +
+                'background: #c6c6c6; border: 3px solid; border-color: #ffffff #555555 #555555 #ffffff; ' +
+                'box-shadow: 0 0 0 2px #000, 0 12px 32px rgba(0, 0, 0, 0.75); border-radius: 0; padding: 6px 12px 14px; ' +
+                'box-sizing: border-box; font-family: "Monocraft", monospace; color: #2a2a2a; } ' +
+                '#blockidle-settings-panel::-webkit-scrollbar { width: 18px; } ' +
+                '#blockidle-settings-panel::-webkit-scrollbar-track { background: ' +
+                'linear-gradient(#373737, #373737) left top / 100% 2px no-repeat, ' +
+                'linear-gradient(#373737, #373737) left top / 2px 100% no-repeat, ' +
+                'linear-gradient(#fff, #fff) left bottom / 100% 2px no-repeat, ' +
+                'linear-gradient(#fff, #fff) right top / 2px 100% no-repeat, #8b8b8b; } ' +
+                '#blockidle-settings-panel::-webkit-scrollbar-thumb { border: 2px solid transparent; background: ' +
+                'linear-gradient(#fff, #fff) left top / 100% 2px no-repeat, ' +
+                'linear-gradient(#fff, #fff) left top / 2px 100% no-repeat, ' +
+                'linear-gradient(#555, #555) left bottom / 100% 2px no-repeat, ' +
+                'linear-gradient(#555, #555) right top / 2px 100% no-repeat, #c6c6c6; ' +
+                'background-clip: padding-box; } ' +
+                '.bi-header { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; ' +
+                'font-size: 16px; color: #2a2a2a; border-bottom: 2px solid #8b8b8b; box-shadow: 0 1px 0 #fff; margin-bottom: 6px; } ' +
+                '.bi-header h2 { font-family: "Monocraft", monospace; font-size: 16px; font-weight: normal; color: #2a2a2a; margin: 0; flex: 1; } ' +
+                '.bi-header-icon { width: 22px; height: 22px; image-rendering: pixelated; display: block; } ' +
+                '.bi-close-btn { width: 26px; height: 24px; border: 0; ' +
+                'border-image: url("tex/gui/button.png") 3 3 3 3 fill / 6px stretch; background: transparent; ' +
+                'color: #fff; text-shadow: 1px 1px 0 #000; cursor: pointer; font: 14px "Monocraft", monospace; ' +
+                'display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 1; } ' +
+                '.bi-close-btn:hover { border-image-source: url("tex/gui/button_highlighted.png"); } ' +
+                '.bi-section-title { margin: 8px 0 4px; font-size: 11px; color: #454545; font-weight: normal; ' +
+                'text-transform: uppercase; letter-spacing: .05em; } ' +
+                '.bi-sep { height: 2px; background: #8b8b8b; box-shadow: 0 1px 0 #fff; margin: 8px 0 6px; } ' +
+                '.bi-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; font-size: 13px; color: #2a2a2a; } ' +
+                '.bi-row label, .bi-row span { font-family: "Monocraft", monospace; font-size: 13px; color: #2a2a2a; font-weight: normal; } ' +
+                '.bi-btn { font: 12px "Monocraft", monospace; color: #fff; text-shadow: 2px 2px 0 rgba(0,0,0,0.6); ' +
+                'border: 0; border-image: url("tex/gui/button.png") 3 3 3 3 fill / 6px stretch; background: transparent; ' +
+                'padding: 5px 12px; cursor: pointer; image-rendering: pixelated; text-align: center; } ' +
+                '.bi-btn:hover { border-image-source: url("tex/gui/button_highlighted.png"); } ' +
+                '.bi-btn.bi-recording { border-image-source: url("tex/gui/button_highlighted.png"); color: #ffff55; text-shadow: 2px 2px 0 #1a4d1a; } ' +
+                'select { font: 12px "Monocraft", monospace; background-color: #2b2b2b; color: #ffffff; ' +
+                'border: 2px solid; border-color: #373737 #fff #fff #373737; padding: 3px 22px 3px 6px; ' +
+                'border-radius: 0; -webkit-appearance: none; appearance: none; ' +
+                'background-image: url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'10\' height=\'6\' viewBox=\'0 0 10 6\'%3E%3Cpath fill=\'%23ffffff\' d=\'M0 0h10L5 6z\'/%3E%3C/svg%3E"); ' +
+                'background-repeat: no-repeat; background-position: right 6px center; background-size: 8px 5px; cursor: pointer; } ' +
+                'select option, select optgroup { background-color: #2b2b2b; color: #ffffff; font-family: "Monocraft", monospace; } ' +
+                'input[type=checkbox] { -webkit-appearance: none; appearance: none; width: 18px; height: 18px; ' +
+                'margin: 0; cursor: pointer; background: url("tex/gui/checkbox.png") 0 0 / 100% 100%; image-rendering: pixelated; } ' +
+                'input[type=checkbox]:checked { background-image: url("tex/gui/checkbox_selected.png"); } ' +
+                'input[type=checkbox]:hover { background-image: url("tex/gui/checkbox_highlighted.png"); } ' +
+                'input[type=checkbox]:checked:hover { background-image: url("tex/gui/checkbox_selected_highlighted.png"); } ' +
+                '#blockidle-keybind-status { font-size: 11px; color: #7a2222; min-height: 14px; margin: 2px 0 4px; text-align: right; } ' +
+                '#blockidle-restore-defaults { display: block; width: 100%; margin-top: 10px; padding: 7px 10px; font-size: 13px; }';
             shadow.appendChild(styleEl);
         }
         let hud = shadow.getElementById ? shadow.getElementById('blockidle-fps-hud') : null;
@@ -323,13 +368,23 @@
             panel.id = 'blockidle-settings-panel';
 
             const header = document.createElement('div');
-            header.className = 'bi-row';
+            header.className = 'bi-header';
+
+            const icon = document.createElement('img');
+            icon.className = 'bi-header-icon';
+            icon.src = 'tex/items/comparator.png';
+            icon.alt = '';
+            header.appendChild(icon);
+
             const title = document.createElement('h2');
-            title.textContent = 'Settings Overlay';
+            title.textContent = 'Configurações do Cliente';
+            header.appendChild(title);
+
             const closeBtn = document.createElement('button');
             closeBtn.id = 'blockidle-close-overlay';
-            closeBtn.className = 'bi-btn';
-            closeBtn.textContent = 'Close (Esc)';
+            closeBtn.className = 'bi-btn bi-close-btn';
+            closeBtn.textContent = '×';
+            closeBtn.title = 'Fechar (Esc)';
             onElementEvent(closeBtn, 'click', function() {
                 const st = window.__BLOCKIDLE_CLIENT_STATE__;
                 if (st) {
@@ -339,9 +394,23 @@
                     sendIpc({ type: 'set_settings_overlay_open', open: false });
                 }
             });
-            header.appendChild(title);
             header.appendChild(closeBtn);
             panel.appendChild(header);
+
+            function addSection(titleText) {
+                const secTitle = document.createElement('div');
+                secTitle.className = 'bi-section-title';
+                secTitle.textContent = titleText;
+                panel.appendChild(secTitle);
+            }
+
+            function addSeparator() {
+                const sep = document.createElement('div');
+                sep.className = 'bi-sep';
+                panel.appendChild(sep);
+            }
+
+            addSection('Desempenho');
 
             function createFpsSelectRow(id, labelText, settingField, presets) {
                 const row = document.createElement('div');
@@ -391,7 +460,7 @@
                 'Background FPS Cap',
                 'background_fps_cap',
                 [
-                    ['Fps0', '0 FPS (Paused)'],
+                    ['Fps0', '0 FPS (Pausado)'],
                     ['Fps5', '5 FPS'],
                     ['Fps15', '15 FPS'],
                     ['Fps30', '30 FPS'],
@@ -399,13 +468,16 @@
                 ]
             );
 
+            addSeparator();
+            addSection('Opções Gerais');
+
             // Toggles
             const toggleDefs = [
                 { id: 'blockidle-toggle-fps-hud', field: 'fps_hud_visible', label: 'FPS HUD' },
                 { id: 'blockidle-toggle-keep-awake', field: 'keep_awake', label: 'Keep Awake' },
-                { id: 'blockidle-toggle-close-to-tray', field: 'close_to_tray', label: 'Close to Tray' },
-                { id: 'blockidle-toggle-audio-mute', field: 'audio_muted', label: 'Audio Mute' },
-                { id: 'blockidle-toggle-fullscreen', field: 'fullscreen', label: 'Fullscreen' }
+                { id: 'blockidle-toggle-close-to-tray', field: 'close_to_tray', label: 'Fechar para Bandeja' },
+                { id: 'blockidle-toggle-audio-mute', field: 'audio_muted', label: 'Silenciar Áudio' },
+                { id: 'blockidle-toggle-fullscreen', field: 'fullscreen', label: 'Tela Cheia (F11)' }
             ];
             for (let i = 0; i < toggleDefs.length; i++) {
                 const def = toggleDefs[i];
@@ -430,6 +502,9 @@
                 toggleElements[def.field] = input;
             }
 
+            addSeparator();
+            addSection('Atalhos de Teclado');
+
             // Keybindings section
             const kbStatus = document.createElement('div');
             kbStatus.id = 'blockidle-keybind-status';
@@ -447,7 +522,7 @@
                 btn.className = 'bi-btn';
                 onElementEvent(btn, 'click', function() {
                     recordingAction = item.key;
-                    keybindStatusText = 'Press a key or Esc to cancel';
+                    keybindStatusText = 'Pressione uma tecla ou Esc para cancelar';
                     syncSettingsOverlay();
                 });
                 row.appendChild(lbl);
@@ -459,7 +534,7 @@
             const restoreBtn = document.createElement('button');
             restoreBtn.id = 'blockidle-restore-defaults';
             restoreBtn.className = 'bi-btn';
-            restoreBtn.textContent = 'Restore Defaults';
+            restoreBtn.textContent = 'Restaurar Padrões';
             onElementEvent(restoreBtn, 'click', function() {
                 const st = window.__BLOCKIDLE_CLIENT_STATE__;
                 recordingAction = null;

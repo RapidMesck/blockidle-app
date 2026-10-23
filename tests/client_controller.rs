@@ -243,7 +243,7 @@ fn initializes_default_client_settings_and_game_view_url_when_config_missing() {
     assert_eq!(settings.foreground_fps_cap, ForegroundFpsCap::Unlimited);
     assert_eq!(settings.background_fps_cap, BackgroundFpsCap::Fps15);
     assert!(settings.keep_awake);
-    assert!(!settings.close_to_tray);
+    assert!(settings.close_to_tray);
     assert!(!settings.audio_muted);
     assert!(!settings.fullscreen);
     assert!(!settings.fps_hud_visible);
@@ -471,7 +471,17 @@ fn persists_window_dimensions_on_resize_and_handles_window_lifecycle_events() {
     assert_eq!(reloaded.settings().window_height, 900);
 
     let close_effects = controller.handle_close_requested();
-    assert_eq!(close_effects, vec![PlatformEffect::ExitApp]);
+    assert!(!close_effects.contains(&PlatformEffect::ExitApp));
+    assert!(close_effects.contains(&PlatformEffect::SetWindowVisible(false)));
+    assert!(!controller.is_window_visible());
+
+    let mut settings = controller.settings().clone();
+    settings.close_to_tray = false;
+    controller.update_settings(settings).expect("save settings");
+    assert_eq!(
+        controller.handle_close_requested(),
+        vec![PlatformEffect::ExitApp]
+    );
 }
 
 #[test]
@@ -549,13 +559,27 @@ fn close_requested_exits_when_close_to_tray_disabled_and_hides_to_tray_when_enab
     let dir = tempdir().expect("tempdir");
     let mut controller = ClientController::load_or_default(dir.path());
 
-    assert!(!controller.settings().close_to_tray);
+    // By default, close_to_tray is enabled: closing window hides to tray instead of exiting
+    assert!(controller.settings().close_to_tray);
+    let default_close_effects = controller.handle_close_requested();
+    assert!(!controller.is_window_visible());
+    assert!(!default_close_effects.contains(&PlatformEffect::ExitApp));
+    assert!(default_close_effects.contains(&PlatformEffect::SetWindowVisible(false)));
+
+    // Re-show window and disable close_to_tray: closing window exits the application
+    let _ = controller.handle_tray_action(TrayAction::ToggleWindowVisibility);
+    assert!(controller.is_window_visible());
+
+    let mut settings = controller.settings().clone();
+    settings.close_to_tray = false;
+    controller.update_settings(settings).expect("save settings");
+
     assert_eq!(
         controller.handle_close_requested(),
         vec![PlatformEffect::ExitApp]
     );
-    assert!(controller.is_window_visible());
 
+    // Re-enable close_to_tray with custom FPS caps
     let mut settings = controller.settings().clone();
     settings.close_to_tray = true;
     settings.foreground_fps_cap = ForegroundFpsCap::Fps60;

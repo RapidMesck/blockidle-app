@@ -344,7 +344,7 @@ impl Default for ClientSettings {
             background_fps_cap: BackgroundFpsCap::Fps15,
             fps_hud_visible: false,
             keep_awake: true,
-            close_to_tray: false,
+            close_to_tray: true,
             audio_muted: false,
             fullscreen: false,
             window_width: 1280,

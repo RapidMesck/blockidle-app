@@ -249,7 +249,8 @@
                 'background-color: #2b2b2b; color: #ffffff; ' +
                 'background-image: url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'10\' height=\'6\' viewBox=\'0 0 10 6\'%3E%3Cpath fill=\'%23ffffff\' d=\'M0 0h10L5 6z\'/%3E%3C/svg%3E") !important; ' +
                 'background-repeat: no-repeat !important; background-position: right 6px center !important; background-size: 8px 5px !important; padding-right: 20px !important; } ' +
-                'select option, select optgroup { background-color: #2b2b2b !important; color: #ffffff !important; }';
+                'select option, select optgroup { background-color: #2b2b2b !important; color: #ffffff !important; } ' +
+                '@media (max-height: 1120px) and (min-height: 801px) { body:not(.cel) #menu { grid-template-columns: 60px 60px; } }';
         }
         if (compatStyle.parentNode !== styleHost || styleHost.lastChild !== compatStyle) {
             styleHost.appendChild(compatStyle);

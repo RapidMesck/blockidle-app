@@ -1423,6 +1423,9 @@ if (!css.includes('.painel, .vidro, #dicabox') || !css.includes('-webkit-font-sm
 if (!css.includes('select option') || !css.includes('appearance: none !important')) {
     throw new Error('Expected select and select option contrast rules');
 }
+if (!css.includes('@media (max-height: 1120px)')) {
+    throw new Error('Expected #menu two-column media query for 1080p desktop viewport');
+}
 console.log('COMPAT_STYLE_OK');
 "#;
     let stdout = run_node_with_dom("compat-style", &init_script, test_body);

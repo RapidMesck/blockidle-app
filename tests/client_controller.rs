@@ -217,10 +217,21 @@ function dispatchKey(type, key, opts = {}) {
 "#;
 
 fn run_node_with_dom(test_name: &str, init_script: &str, test_body: &str) -> String {
+    use std::io::Write;
+
     let full_script = format!("{MOCK_DOM_PREAMBLE}\n{init_script}\n{test_body}");
+    let mut temp_file = tempfile::Builder::new()
+        .prefix("node_test_")
+        .suffix(".js")
+        .tempfile()
+        .expect("create temp js file for node test");
+    temp_file
+        .write_all(full_script.as_bytes())
+        .expect("write script to temp file");
+    temp_file.flush().expect("flush temp file");
+
     let output = std::process::Command::new("node")
-        .arg("-e")
-        .arg(&full_script)
+        .arg(temp_file.path())
         .output()
         .expect("run node test");
     assert!(

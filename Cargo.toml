@@ -1,6 +1,6 @@
 [package]
 name = "blockidle-app"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Native desktop client shell for Blockidle (https://blockidle.io/play)"
 license = "MIT"

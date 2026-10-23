@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
-use tao::window::{Fullscreen, Window, WindowBuilder};
+use tao::window::{Fullscreen, Icon as WindowIcon, Window, WindowBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use tray_icon::{Icon as TrayIconImage, TrayIcon, TrayIconBuilder};
 use wry::{WebContext, WebView, WebViewBuilder};
 
 #[derive(Debug)]
@@ -41,21 +41,14 @@ impl SystemTray {
     }
 }
 
-fn build_tray_icon_rgba() -> Option<Icon> {
-    let width = 32u32;
-    let height = 32u32;
-    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
-    for y in 0..height {
-        for x in 0..width {
-            let border = x < 3 || x >= width - 3 || y < 3 || y >= height - 3;
-            if border {
-                rgba.extend_from_slice(&[34, 197, 94, 255]);
-            } else {
-                rgba.extend_from_slice(&[20, 83, 45, 255]);
-            }
-        }
-    }
-    Icon::from_rgba(rgba, width, height).ok()
+fn load_app_window_icon() -> Option<WindowIcon> {
+    const RGBA: &[u8] = include_bytes!("../assets/icons/icon_128.rgba");
+    WindowIcon::from_rgba(RGBA.to_vec(), 128, 128).ok()
+}
+
+fn load_app_tray_icon() -> Option<TrayIconImage> {
+    const RGBA: &[u8] = include_bytes!("../assets/icons/icon_32.rgba");
+    TrayIconImage::from_rgba(RGBA.to_vec(), 32, 32).ok()
 }
 
 fn build_system_tray(
@@ -106,7 +99,7 @@ fn build_system_tray(
     let mut builder = TrayIconBuilder::new()
         .with_tooltip("Blockidle")
         .with_menu(Box::new(menu));
-    if let Some(icon) = build_tray_icon_rgba() {
+    if let Some(icon) = load_app_tray_icon() {
         builder = builder.with_icon(icon);
     }
 
@@ -435,14 +428,18 @@ fn main() -> wry::Result<()> {
         )
     };
 
-    let window = WindowBuilder::new()
+    let mut window_builder = WindowBuilder::new()
         .with_title("Blockidle")
         .with_inner_size(LogicalSize::new(width, height))
         .with_fullscreen(if fullscreen {
             Some(Fullscreen::Borderless(None))
         } else {
             None
-        })
+        });
+    if let Some(icon) = load_app_window_icon() {
+        window_builder = window_builder.with_window_icon(Some(icon));
+    }
+    let window = window_builder
         .build(&event_loop)
         .expect("failed to build Client Shell window");
 

@@ -126,18 +126,12 @@ jobs:
 
           strip target/release/blockidle-app
 
-          cat > blockidle.svg << 'EOF'
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-            <rect width="64" height="64" fill="#182026"/>
-            <rect x="8" y="8" width="48" height="48" fill="#52b848"/>
-            <rect x="16" y="16" width="32" height="32" fill="#2e7d32"/>
-          </svg>
-          EOF
-
           # 1. Portable .tar.gz archive
           STAGE_DIR="blockidle-app-${TAG}-linux-x86_64"
           mkdir -p "${STAGE_DIR}"
           cp target/release/blockidle-app "${STAGE_DIR}/blockidle-app"
+          cp assets/icons/icon.png "${STAGE_DIR}/icon.png"
+          cp assets/icons/favicon.ico "${STAGE_DIR}/favicon.ico"
           chmod 755 "${STAGE_DIR}/blockidle-app"
           tar -czf "dist/${STAGE_DIR}.tar.gz" "${STAGE_DIR}"
 
@@ -147,10 +141,18 @@ jobs:
           mkdir -p "${DEB_DIR}/usr/bin"
           mkdir -p "${DEB_DIR}/usr/share/applications"
           mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps"
+          mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/256x256/apps"
+          mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/64x64/apps"
+          mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/32x32/apps"
+          mkdir -p "${DEB_DIR}/usr/share/pixmaps"
 
           cp target/release/blockidle-app "${DEB_DIR}/usr/bin/blockidle-app"
           chmod 755 "${DEB_DIR}/usr/bin/blockidle-app"
-          cp blockidle.svg "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps/blockidle.svg"
+          cp assets/icons/blockidle.svg "${DEB_DIR}/usr/share/icons/hicolor/scalable/apps/blockidle.svg"
+          cp assets/icons/icon-256.png "${DEB_DIR}/usr/share/icons/hicolor/256x256/apps/blockidle.png"
+          cp assets/icons/favicon-64.png "${DEB_DIR}/usr/share/icons/hicolor/64x64/apps/blockidle.png"
+          cp assets/icons/favicon.png "${DEB_DIR}/usr/share/icons/hicolor/32x32/apps/blockidle.png"
+          cp assets/icons/icon.png "${DEB_DIR}/usr/share/pixmaps/blockidle.png"
 
           cat > "${DEB_DIR}/usr/share/applications/blockidle.desktop" << 'EOF'
           [Desktop Entry]
@@ -182,13 +184,18 @@ jobs:
           mkdir -p "${APPDIR}/usr/bin"
           mkdir -p "${APPDIR}/usr/share/applications"
           mkdir -p "${APPDIR}/usr/share/icons/hicolor/scalable/apps"
+          mkdir -p "${APPDIR}/usr/share/icons/hicolor/256x256/apps"
+          mkdir -p "${APPDIR}/usr/share/pixmaps"
 
           cp target/release/blockidle-app "${APPDIR}/usr/bin/blockidle-app"
           chmod 755 "${APPDIR}/usr/bin/blockidle-app"
 
-          cp blockidle.svg "${APPDIR}/blockidle.svg"
-          cp blockidle.svg "${APPDIR}/.DirIcon"
-          cp blockidle.svg "${APPDIR}/usr/share/icons/hicolor/scalable/apps/blockidle.svg"
+          cp assets/icons/icon-256.png "${APPDIR}/blockidle.png"
+          cp assets/icons/blockidle.svg "${APPDIR}/blockidle.svg"
+          cp assets/icons/icon-256.png "${APPDIR}/.DirIcon"
+          cp assets/icons/icon-256.png "${APPDIR}/usr/share/icons/hicolor/256x256/apps/blockidle.png"
+          cp assets/icons/blockidle.svg "${APPDIR}/usr/share/icons/hicolor/scalable/apps/blockidle.svg"
+          cp assets/icons/icon.png "${APPDIR}/usr/share/pixmaps/blockidle.png"
 
           cat > "${APPDIR}/blockidle.desktop" << 'EOF'
           [Desktop Entry]
@@ -268,6 +275,8 @@ jobs:
           STAGE_DIR="blockidle-app-${TAG}-windows-x86_64"
           mkdir -p "${STAGE_DIR}"
           cp target/release/blockidle-app.exe "${STAGE_DIR}/blockidle-app.exe"
+          cp assets/icons/favicon.ico "${STAGE_DIR}/favicon.ico"
+          cp assets/icons/icon.png "${STAGE_DIR}/icon.png"
           7z a -tzip "dist/${STAGE_DIR}.zip" "${STAGE_DIR}"
 
           cd dist

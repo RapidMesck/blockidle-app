@@ -25,8 +25,7 @@
     let liveFps = 0;
 
     function isKeepAwakeEnabled() {
-        const st = window.__BLOCKIDLE_CLIENT_STATE__;
-        return Boolean(st && st.settings && st.settings.keep_awake);
+        return true;
     }
 
     const docProto = (typeof Document !== 'undefined' && Document.prototype)
@@ -205,9 +204,6 @@
         }
         if (toggleElements.fps_hud_visible) {
             toggleElements.fps_hud_visible.checked = Boolean(st.settings.fps_hud_visible);
-        }
-        if (toggleElements.keep_awake) {
-            toggleElements.keep_awake.checked = Boolean(st.settings.keep_awake);
         }
         if (toggleElements.close_to_tray) {
             toggleElements.close_to_tray.checked = Boolean(st.settings.close_to_tray);
@@ -571,12 +567,6 @@
                     field: 'fps_hud_visible',
                     label: 'FPS HUD',
                     tooltip: 'Exibe o contador de quadros por segundo em tempo real no canto da tela'
-                },
-                {
-                    id: 'blockidle-toggle-keep-awake',
-                    field: 'keep_awake',
-                    label: 'Keep Awake',
-                    tooltip: 'Impede que o computador suspenda ou bloqueie a tela durante o jogo idle'
                 },
                 {
                     id: 'blockidle-toggle-close-to-tray',
@@ -1300,8 +1290,16 @@
         try {
             var cenaCanvas = document.getElementById ? document.getElementById('cena') : null;
             if (isPaused) {
-                if (window.__renderizador && typeof window.__renderizador.setSize === 'function') {
-                    window.__renderizador.setSize(1, 1, false);
+                if (window.__renderizador) {
+                    if (typeof window.__renderizador.setSize === 'function') {
+                        window.__renderizador.setSize(1, 1, false);
+                    }
+                    if (window.__renderizador.renderLists && typeof window.__renderizador.renderLists.dispose === 'function') {
+                        window.__renderizador.renderLists.dispose();
+                    }
+                    if (window.__renderizador.info && typeof window.__renderizador.info.reset === 'function') {
+                        window.__renderizador.info.reset();
+                    }
                 } else if (cenaCanvas) {
                     cenaCanvas.width = 1;
                     cenaCanvas.height = 1;

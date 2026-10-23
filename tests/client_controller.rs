@@ -910,9 +910,17 @@ fn initialization_script_shrinks_renderer_and_prunes_idle_memory_when_cap_is_zer
         r#"
 let lastSetSize = null;
 let resizeDispatched = false;
+let renderListsDisposed = false;
+let infoReset = false;
 window.__renderizador = {{
     setSize(w, h, updateStyle) {{
         lastSetSize = {{ w, h, updateStyle }};
+    }},
+    renderLists: {{
+        dispose() {{ renderListsDisposed = true; }}
+    }},
+    info: {{
+        reset() {{ infoReset = true; }}
     }}
 }};
 window.__eventos = [];
@@ -928,6 +936,9 @@ window.addEventListener('resize', () => {{
 
 if (!lastSetSize || lastSetSize.w !== 1 || lastSetSize.h !== 1 || lastSetSize.updateStyle !== false) {{
     throw new Error('Expected __renderizador.setSize(1, 1, false) when cap is 0 FPS, got: ' + JSON.stringify(lastSetSize));
+}}
+if (!renderListsDisposed || !infoReset) {{
+    throw new Error('Expected renderLists.dispose() and info.reset() to be called on pause');
 }}
 if (!Array.isArray(window.__eventos) || window.__eventos.length !== 200) {{
     throw new Error('Expected window.__eventos to be pruned to 200 items in idle, got: ' + window.__eventos.length);
@@ -1029,7 +1040,7 @@ fn toggles_audio_mute_from_tray_and_ipc_persists_state_syncs_tray_menu_and_injec
 #[test]
 fn initialization_script_enforces_keep_awake_visibility_suppression_when_enabled() {
     let dir = tempdir().expect("tempdir");
-    let mut controller = ClientController::load_or_default(dir.path());
+    let controller = ClientController::load_or_default(dir.path());
     assert!(controller.settings().keep_awake);
 
     let init_script = controller.initialization_script();
@@ -1038,55 +1049,45 @@ fn initialization_script_enforces_keep_awake_visibility_suppression_when_enabled
         "initialization_script still contains unreplaced __BLOCKIDLE_APP_VERSION__"
     );
 
-    let mut disabled_settings = controller.settings().clone();
-    disabled_settings.keep_awake = false;
-    controller
-        .update_settings(disabled_settings)
-        .expect("update settings");
-    let disable_keep_awake_script = controller.webview_state_sync_script();
-
     assert!(init_script.contains("visibilitychange"));
     assert!(init_script.contains("visibilityState"));
 
-    let test_body = format!(
-        r#"
+    let test_body = r#"
 let gameVisibilityCalls = 0;
-document.addEventListener('visibilitychange', () => {{
+document.addEventListener('visibilitychange', () => {
     gameVisibilityCalls++;
-}});
+});
 
 // Simulate browser/WebView hiding the page while Keep Awake is true
 nativeHidden = true;
 nativeVisibilityState = 'hidden';
 document.dispatchVisibilityChange();
 
-if (document.hidden !== false) {{
+if (document.hidden !== false) {
     throw new Error('Expected document.hidden === false when Keep Awake is enabled, got ' + document.hidden);
-}}
-if (document.visibilityState !== 'visible') {{
+}
+if (document.visibilityState !== 'visible') {
     throw new Error('Expected document.visibilityState === "visible" when Keep Awake is enabled, got ' + document.visibilityState);
-}}
-if (gameVisibilityCalls !== 0) {{
+}
+if (gameVisibilityCalls !== 0) {
     throw new Error('Expected visibilitychange listener to be suppressed when Keep Awake is enabled, got ' + gameVisibilityCalls);
-}}
+}
 
-// Disable Keep Awake via state sync and verify native visibility signals work again
-{disable_keep_awake_script}
+// Verify Keep Awake remains permanently active to prevent idle/offline disconnects
 document.dispatchVisibilityChange();
-if (document.hidden !== true) {{
-    throw new Error('Expected document.hidden === true when Keep Awake is disabled');
-}}
-if (document.visibilityState !== 'hidden') {{
-    throw new Error('Expected document.visibilityState === "hidden" when Keep Awake is disabled');
-}}
-if (gameVisibilityCalls !== 1) {{
-    throw new Error('Expected visibilitychange listener to fire when Keep Awake is disabled');
-}}
+if (document.hidden !== false) {
+    throw new Error('Expected document.hidden to remain false (permanently online)');
+}
+if (document.visibilityState !== 'visible') {
+    throw new Error('Expected document.visibilityState to remain "visible"');
+}
+if (gameVisibilityCalls !== 0) {
+    throw new Error('Expected visibilitychange listener to remain suppressed');
+}
 console.log('KEEP_AWAKE_OK');
-"#
-    );
+"#;
 
-    run_node_with_dom("keep-awake", &init_script, &test_body);
+    run_node_with_dom("keep-awake", &init_script, test_body);
 }
 
 #[test]
@@ -1470,23 +1471,24 @@ if (gameKeyEvents.length !== 0) {
     throw new Error('Expected game keys to be consumed while Settings Overlay is open, got: ' + JSON.stringify(gameKeyEvents));
 }
 
-// Controls for Foreground FPS Cap, Background FPS Cap, and all 5 toggles exist and emit update_settings IPC
+// Controls for Foreground FPS Cap, Background FPS Cap, and all 4 toggles exist and emit update_settings IPC
 const fgSelect = shadow.getElementById('blockidle-fg-fps-select');
 const bgSelect = shadow.getElementById('blockidle-bg-fps-select');
 const hudToggle = shadow.getElementById('blockidle-toggle-fps-hud');
-const keepAwakeToggle = shadow.getElementById('blockidle-toggle-keep-awake');
 const closeToTrayToggle = shadow.getElementById('blockidle-toggle-close-to-tray');
 const muteToggle = shadow.getElementById('blockidle-toggle-audio-mute');
 const fullscreenToggle = shadow.getElementById('blockidle-toggle-fullscreen');
 
-if (!fgSelect || !bgSelect || !hudToggle || !keepAwakeToggle || !closeToTrayToggle || !muteToggle || !fullscreenToggle) {
+if (!fgSelect || !bgSelect || !hudToggle || !closeToTrayToggle || !muteToggle || !fullscreenToggle) {
     throw new Error('Missing one or more required controls in Settings Overlay');
+}
+if (shadow.getElementById('blockidle-toggle-keep-awake')) {
+    throw new Error('Expected #blockidle-toggle-keep-awake to be removed from Settings Overlay');
 }
 
 if (!fgSelect.title || !fgSelect.title.includes('foco')) throw new Error('Expected fgSelect title tooltip, got: ' + fgSelect.title);
 if (!bgSelect.title || !bgSelect.title.includes('segundo plano')) throw new Error('Expected bgSelect title tooltip, got: ' + bgSelect.title);
 if (!hudToggle.title || !hudToggle.title.includes('contador de quadros')) throw new Error('Expected hudToggle title tooltip, got: ' + hudToggle.title);
-if (!keepAwakeToggle.title || !keepAwakeToggle.title.includes('suspenda')) throw new Error('Expected keepAwakeToggle title tooltip, got: ' + keepAwakeToggle.title);
 if (!closeToTrayToggle.title || !closeToTrayToggle.title.includes('bandeja')) throw new Error('Expected closeToTrayToggle title tooltip, got: ' + closeToTrayToggle.title);
 if (!muteToggle.title || !muteToggle.title.includes('áudio')) throw new Error('Expected muteToggle title tooltip, got: ' + muteToggle.title);
 if (!fullscreenToggle.title || !fullscreenToggle.title.includes('tela cheia')) throw new Error('Expected fullscreenToggle title tooltip, got: ' + fullscreenToggle.title);
@@ -1494,7 +1496,6 @@ if (!fullscreenToggle.title || !fullscreenToggle.title.includes('tela cheia')) t
 fgSelect.change('Fps144');
 bgSelect.change('Fps0');
 hudToggle.change(undefined, true);
-keepAwakeToggle.change(undefined, false);
 closeToTrayToggle.change(undefined, true);
 muteToggle.change(undefined, true);
 fullscreenToggle.change(undefined, true);
@@ -1504,7 +1505,6 @@ if (!lastSettingsMsg ||
     lastSettingsMsg.settings.foreground_fps_cap !== 'Fps144' ||
     lastSettingsMsg.settings.background_fps_cap !== 'Fps0' ||
     lastSettingsMsg.settings.fps_hud_visible !== true ||
-    lastSettingsMsg.settings.keep_awake !== false ||
     lastSettingsMsg.settings.close_to_tray !== true ||
     lastSettingsMsg.settings.audio_muted !== true ||
     lastSettingsMsg.settings.fullscreen !== true) {
@@ -1629,7 +1629,7 @@ console.log(JSON.stringify(ipcMessages));
         BackgroundFpsCap::Fps0
     );
     assert!(controller.settings().fps_hud_visible);
-    assert!(!controller.settings().keep_awake);
+    assert!(controller.settings().keep_awake);
     assert!(controller.settings().close_to_tray);
     assert!(controller.settings().audio_muted);
     assert!(controller.settings().fullscreen);

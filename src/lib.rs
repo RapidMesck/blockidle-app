@@ -426,7 +426,13 @@ pub enum BackgroundFpsCap {
 
 impl BackgroundFpsCap {
     pub fn as_fps(self) -> Option<u32> {
-        Some(0)
+        Some(match self {
+            Self::Fps0 => 0,
+            Self::Fps5 => 5,
+            Self::Fps15 => 15,
+            Self::Fps30 => 30,
+            Self::Fps60 => 60,
+        })
     }
 }
 
@@ -648,7 +654,7 @@ impl Default for ClientSettings {
     fn default() -> Self {
         Self {
             foreground_fps_cap: ForegroundFpsCap::Fps60,
-            background_fps_cap: BackgroundFpsCap::Fps0,
+            background_fps_cap: BackgroundFpsCap::Fps15,
             fps_hud_visible: false,
             performance_mode: false,
             keep_awake: true,
@@ -714,10 +720,6 @@ impl ClientController {
                                 | ForegroundFpsCap::Unlimited
                         ) {
                             parsed.foreground_fps_cap = ForegroundFpsCap::Fps60;
-                            should_persist = true;
-                        }
-                        if parsed.background_fps_cap != BackgroundFpsCap::Fps0 {
-                            parsed.background_fps_cap = BackgroundFpsCap::Fps0;
                             should_persist = true;
                         }
                         parsed
@@ -805,7 +807,6 @@ impl ClientController {
         ) {
             settings.foreground_fps_cap = ForegroundFpsCap::Fps60;
         }
-        settings.background_fps_cap = BackgroundFpsCap::Fps0;
         settings.keep_awake = true;
         self.settings = settings;
         self.save_settings()
@@ -947,7 +948,10 @@ impl ClientController {
         match action {
             KeybindingAction::ToggleSettingsOverlay => self.toggle_settings_overlay(),
             KeybindingAction::ToggleFpsHud => self.toggle_fps_hud(),
-            KeybindingAction::ReloadGameView => vec![PlatformEffect::ReloadGameView],
+            KeybindingAction::ReloadGameView => {
+                self.settings_overlay_open = false;
+                vec![PlatformEffect::ReloadGameView]
+            }
             KeybindingAction::ToggleAudioMute => self.toggle_audio_mute(),
             KeybindingAction::ToggleFullscreen => self.toggle_fullscreen(),
         }
@@ -1130,7 +1134,10 @@ impl ClientController {
                 let (_, effects) = self.handle_new_window_request(&url);
                 effects
             }
-            IpcMessage::ReloadGameView => vec![PlatformEffect::ReloadGameView],
+            IpcMessage::ReloadGameView => {
+                self.settings_overlay_open = false;
+                vec![PlatformEffect::ReloadGameView]
+            }
             IpcMessage::ToggleFullscreen => self.toggle_fullscreen(),
             IpcMessage::ToggleAudioMute => self.toggle_audio_mute(),
             IpcMessage::HideToTray => self.hide_to_tray(),

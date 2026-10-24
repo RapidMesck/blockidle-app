@@ -69,6 +69,9 @@
 
     function suppressVisibilityChange(event) {
         if (isKeepAwakeEnabled()) {
+            if (event && event.__blockidleResume) {
+                return;
+            }
             if (event && typeof event.stopImmediatePropagation === 'function') {
                 event.stopImmediatePropagation();
             }
@@ -94,6 +97,7 @@
     let hudElement = null;
     let settingsOverlayElement = null;
     let fgSelectElement = null;
+    let bgSelectElement = null;
     let toggleElements = {};
     let keybindButtons = {};
     let keybindStatusElement = null;
@@ -197,6 +201,9 @@
         }
         if (fgSelectElement) {
             fgSelectElement.value = st.settings.foreground_fps_cap || 'Fps60';
+        }
+        if (bgSelectElement) {
+            bgSelectElement.value = st.settings.background_fps_cap || 'Fps15';
         }
         if (toggleElements.performance_mode) {
             toggleElements.performance_mode.checked = Boolean(st.settings.performance_mode);
@@ -415,7 +422,7 @@
                 'input[type=checkbox]:hover { background-image: url("tex/gui/checkbox_highlighted.png"); } ' +
                 'input[type=checkbox]:checked:hover { background-image: url("tex/gui/checkbox_selected_highlighted.png"); } ' +
                 '#blockidle-keybind-status { font-size: 11px; color: #7a2222; min-height: 14px; margin: 2px 0 4px; text-align: right; } ' +
-                '#blockidle-restore-defaults { display: block; width: 100%; margin-top: 10px; padding: 7px 10px; font-size: 13px; } ' +
+                '#blockidle-restore-defaults, #blockidle-reload-game { display: block; width: 100%; margin-top: 10px; padding: 7px 10px; font-size: 13px; cursor: pointer; } ' +
                 '.bi-about { margin-top: 10px; padding-top: 8px; border-top: 2px solid #8b8b8b; box-shadow: 0 -1px 0 #fff; ' +
                 'display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center; font-size: 11px; color: #555555; } ' +
                 '.bi-about-title { font-size: 12px; color: #2a2a2a; font-weight: normal; } ' +
@@ -538,6 +545,20 @@
                 'Limite de taxa de quadros quando a janela estiver aberta (máximo 60 FPS)'
             );
 
+            bgSelectElement = createFpsSelectRow(
+                'blockidle-bg-fps-select',
+                'Background FPS Cap',
+                'background_fps_cap',
+                [
+                    ['Fps0', '0 FPS (Pausado)'],
+                    ['Fps5', '5 FPS'],
+                    ['Fps15', '15 FPS'],
+                    ['Fps30', '30 FPS'],
+                    ['Fps60', '60 FPS']
+                ],
+                'Limite de FPS quando a janela estiver em segundo plano ou minimizada (15 FPS recomendado para modo idle)'
+            );
+
             addSeparator();
             addSection('Opções Gerais');
 
@@ -605,6 +626,21 @@
                 panel.appendChild(row);
                 toggleElements[def.field] = input;
             }
+
+            const reloadBtn = document.createElement('button');
+            reloadBtn.id = 'blockidle-reload-game';
+            reloadBtn.className = 'bi-btn';
+            reloadBtn.textContent = '🔄 Recarregar Jogo (F5)';
+            reloadBtn.title = 'Recarrega a página do jogo e todos os dados e interface do zero';
+            onElementEvent(reloadBtn, 'click', function() {
+                const st = window.__BLOCKIDLE_CLIENT_STATE__;
+                if (st) {
+                    st.settings_overlay_open = false;
+                    syncSettingsOverlay();
+                }
+                sendIpc({ type: 'reload_game_view' });
+            });
+            panel.appendChild(reloadBtn);
 
             addSeparator();
             addSection('Atalhos de Teclado');
@@ -1116,7 +1152,7 @@
                         schedulePump();
                         return;
                     }
-                    if (!Number.isFinite(lastFrameTimestamp) || (ts - lastFrameTimestamp) > targetInterval * 2) {
+                    if (!Number.isFinite(lastFrameTimestamp) || (ts - lastFrameTimestamp) > targetInterval * 2 || lastFrameTimestamp > ts) {
                         lastFrameTimestamp = ts;
                     } else {
                         lastFrameTimestamp = lastFrameTimestamp + targetInterval;
@@ -1327,42 +1363,67 @@
                 }
             } catch (_) {}
 
-            // Sync the game's settings checkbox if mounted
+            // Sync the game's settings checkbox if mounted and dispatch change event
             var gl = document.getElementById ? document.getElementById('graf-leve') : null;
-            if (gl && gl.checked !== fast) {
-                gl.checked = fast;
+            if (gl) {
+                if (gl.checked !== fast) {
+                    gl.checked = fast;
+                }
                 if (typeof gl.onchange === 'function') {
-                    gl.onchange();
+                    try { gl.onchange(); } catch (_) {}
+                }
+                if (typeof gl.dispatchEvent === 'function' && typeof Event === 'function') {
+                    try { gl.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
                 }
             }
 
             // 2. Control Three.js shadow maps and pixel ratio directly
-            if (window.__renderizador) {
-                if (window.__renderizador.shadowMap) {
-                    window.__renderizador.shadowMap.autoUpdate = !fast;
-                    if (fast) {
-                        window.__renderizador.shadowMap.needsUpdate = false;
-                    }
+            var renderer = window.__renderizador;
+            if (renderer) {
+                if (renderer.shadowMap) {
+                    try { renderer.shadowMap.enabled = !fast; } catch (_) {}
+                    renderer.shadowMap.autoUpdate = !fast;
+                    renderer.shadowMap.needsUpdate = !fast;
                 }
-                if (typeof window.__renderizador.setPixelRatio === 'function') {
-                    var targetRatio = fast ? 1 : Math.min((typeof window.devicePixelRatio === 'number' ? window.devicePixelRatio : 1), 1.5);
-                    var currentRatio = (typeof window.__renderizador.getPixelRatio === 'function')
-                        ? window.__renderizador.getPixelRatio()
+                if (typeof renderer.setPixelRatio === 'function') {
+                    var baseRatio = (typeof window.devicePixelRatio === 'number' && window.devicePixelRatio > 0)
+                        ? window.devicePixelRatio
+                        : 1;
+                    var targetRatio = fast
+                        ? (baseRatio >= 2 ? 1 : 0.75)
+                        : Math.min(baseRatio, 1.5);
+                    var currentRatio = (typeof renderer.getPixelRatio === 'function')
+                        ? renderer.getPixelRatio()
                         : null;
                     if (currentRatio === null || currentRatio !== targetRatio) {
-                        window.__renderizador.setPixelRatio(targetRatio);
-                        if (typeof window.__renderizador.setSize === 'function' && getEffectiveCap() !== 0) {
-                            window.__renderizador.setSize(window.innerWidth || 1280, window.innerHeight || 720, false);
+                        renderer.setPixelRatio(targetRatio);
+                        if (typeof renderer.setSize === 'function' && getEffectiveCap() !== 0) {
+                            renderer.setSize(window.innerWidth || 1280, window.innerHeight || 720, false);
                         }
                     }
                 }
             }
 
-            // 3. Throttle cosmetic particles in performance mode
+            // Set canvas imageRendering style for crisp scaling in fast mode
+            var cenaCanvas = document.getElementById ? document.getElementById('cena') : null;
+            if (cenaCanvas && cenaCanvas.style) {
+                cenaCanvas.style.imageRendering = fast ? 'pixelated' : '';
+            }
+
+            // 3. Control lights and shadows in Three.js scene directly
+            if (window.__demo && window.__demo.cena3d && typeof window.__demo.cena3d.traverse === 'function') {
+                window.__demo.cena3d.traverse(function(obj) {
+                    if (obj && (obj.isLight || obj.isDirectionalLight) && typeof obj.castShadow === 'boolean') {
+                        obj.castShadow = !fast;
+                    }
+                });
+            }
+
+            // 4. Throttle cosmetic particles in performance mode
             if (window.__demo && window.__demo.particulas && typeof window.__demo.particulas.criar === 'function' && !window.__demo.particulas.__origCriar) {
                 window.__demo.particulas.__origCriar = window.__demo.particulas.criar;
                 window.__demo.particulas.criar = function(p, v, cor, tam, vida, opts) {
-                    if (isPerformanceModeEnabled() && Math.random() < 0.75) {
+                    if (isPerformanceModeEnabled() && Math.random() < 0.8) {
                         return;
                     }
                     return window.__demo.particulas.__origCriar.apply(this, arguments);
@@ -1370,6 +1431,32 @@
             }
         } catch (_) {}
     }
+
+    var internalRenderizador = window.__renderizador || null;
+    try {
+        Object.defineProperty(window, '__renderizador', {
+            configurable: true,
+            enumerable: true,
+            get: function() { return internalRenderizador; },
+            set: function(r) {
+                internalRenderizador = r;
+                syncPerformanceMode();
+            }
+        });
+    } catch (_) {}
+
+    var internalDemo = window.__demo || null;
+    try {
+        Object.defineProperty(window, '__demo', {
+            configurable: true,
+            enumerable: true,
+            get: function() { return internalDemo; },
+            set: function(d) {
+                internalDemo = d;
+                syncPerformanceMode();
+            }
+        });
+    } catch (_) {}
 
     window.__blockidleApplyState = function(nextState) {
         const prevCap = getEffectiveCap();
@@ -1385,6 +1472,13 @@
             clearScheduledPump();
             syncRenderState(false);
             schedulePump();
+            try {
+                if (typeof document !== 'undefined' && typeof document.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+                    var resumeEv = new CustomEvent('visibilitychange');
+                    resumeEv.__blockidleResume = true;
+                    document.dispatchEvent(resumeEv);
+                }
+            } catch (_) {}
         } else if (prevCap !== nextCap) {
             clearScheduledPump();
             schedulePump();

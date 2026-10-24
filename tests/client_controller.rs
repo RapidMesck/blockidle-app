@@ -112,6 +112,23 @@ const document = {
         const capture = typeof options === 'boolean' ? options : !!(options && options.capture);
         docListeners.push({ type, listener, capture });
     },
+    dispatchEvent(ev) {
+        let stopped = false;
+        const event = ev || { type: 'unknown' };
+        const origStop = event.stopImmediatePropagation;
+        event.stopImmediatePropagation = function() {
+            stopped = true;
+            if (origStop) origStop.call(event);
+        };
+        const sorted = docListeners
+            .filter(l => l.type === event.type)
+            .sort((a, b) => (b.capture ? 1 : 0) - (a.capture ? 1 : 0));
+        for (const item of sorted) {
+            if (stopped) break;
+            item.listener.call(document, event);
+        }
+        return true;
+    },
     dispatchVisibilityChange() {
         let stopped = false;
         const event = {
@@ -273,7 +290,7 @@ fn initializes_default_client_settings_and_game_view_url_when_config_missing() {
 
     let settings = controller.settings();
     assert_eq!(settings.foreground_fps_cap, ForegroundFpsCap::Fps60);
-    assert_eq!(settings.background_fps_cap, BackgroundFpsCap::Fps0);
+    assert_eq!(settings.background_fps_cap, BackgroundFpsCap::Fps15);
     assert!(!settings.performance_mode);
     assert!(settings.keep_awake);
     assert!(settings.close_to_tray);
@@ -668,14 +685,14 @@ fn switches_effective_fps_cap_between_foreground_and_background_on_focus_and_min
     let dir = tempdir().expect("tempdir");
     let mut controller = ClientController::load_or_default(dir.path());
 
-    // Default: 60 FPS in foreground, 0 FPS in background
+    // Default: 60 FPS in foreground, 15 FPS in background
     assert_eq!(controller.effective_fps_cap(), Some(60));
     assert_eq!(controller.webview_state().effective_fps_cap, Some(60));
 
-    // Unfocus switches to background cap (0 FPS) and emits SyncWebViewState
+    // Unfocus switches to background cap (15 FPS) and emits SyncWebViewState
     let unfocus_effects = controller.handle_focus_changed(false);
-    assert_eq!(controller.effective_fps_cap(), Some(0));
-    assert_eq!(controller.webview_state().effective_fps_cap, Some(0));
+    assert_eq!(controller.effective_fps_cap(), Some(15));
+    assert_eq!(controller.webview_state().effective_fps_cap, Some(15));
     assert_eq!(
         unfocus_effects,
         vec![PlatformEffect::SyncWebViewState(
@@ -693,7 +710,7 @@ fn switches_effective_fps_cap_between_foreground_and_background_on_focus_and_min
         )]
     );
 
-    // Test foreground presets when focused & background always capped at 0 FPS when minimized
+    // Test foreground presets when focused & background cap presets when unfocused/minimized
     for (fg_preset, expected_fg) in [
         (ForegroundFpsCap::Fps15, Some(15)),
         (ForegroundFpsCap::Fps30, Some(30)),
@@ -711,10 +728,10 @@ fn switches_effective_fps_cap_between_foreground_and_background_on_focus_and_min
         assert_eq!(controller.effective_fps_cap(), expected_fg);
         assert_eq!(controller.webview_state().effective_fps_cap, expected_fg);
 
-        // Minimized while focused -> background cap (always 0 FPS)
+        // Minimized while focused -> background cap (15 FPS by default)
         let min_effects = controller.handle_minimized_changed(true);
-        assert_eq!(controller.effective_fps_cap(), Some(0));
-        assert_eq!(controller.webview_state().effective_fps_cap, Some(0));
+        assert_eq!(controller.effective_fps_cap(), Some(15));
+        assert_eq!(controller.webview_state().effective_fps_cap, Some(15));
         assert_eq!(
             min_effects,
             vec![PlatformEffect::SyncWebViewState(
@@ -986,12 +1003,19 @@ fn initialization_script_applies_performance_mode_optimizations_to_threejs_and_p
 
     let test_body = format!(
         r#"
+const cenaCanvas = document.createElement('canvas');
+cenaCanvas.id = 'cena';
+document.body.appendChild(cenaCanvas);
+
 window.devicePixelRatio = 2;
 let pixelRatio = 1.5;
+let shadowEnabled = true;
 let shadowAutoUpdate = true;
 let shadowNeedsUpdate = true;
 window.__renderizador = {{
     shadowMap: {{
+        get enabled() {{ return shadowEnabled; }},
+        set enabled(v) {{ shadowEnabled = v; }},
         get autoUpdate() {{ return shadowAutoUpdate; }},
         set autoUpdate(v) {{ shadowAutoUpdate = v; }},
         get needsUpdate() {{ return shadowNeedsUpdate; }},
@@ -1003,7 +1027,13 @@ window.__renderizador = {{
 }};
 
 let particleCalls = 0;
+const sunLight = {{ isLight: true, castShadow: true }};
 window.__demo = {{
+    cena3d: {{
+        traverse(cb) {{
+            cb(sunLight);
+        }}
+    }},
     particulas: {{
         criar() {{
             particleCalls++;
@@ -1014,17 +1044,33 @@ window.__demo = {{
 // Apply fast mode
 {fast_sync_script}
 
+if (shadowEnabled !== false) {{
+    throw new Error('Expected shadowMap.enabled === false in fast mode');
+}}
 if (shadowAutoUpdate !== false) {{
     throw new Error('Expected shadowMap.autoUpdate === false in fast mode');
 }}
 if (shadowNeedsUpdate !== false) {{
     throw new Error('Expected shadowMap.needsUpdate === false in fast mode');
 }}
+if (sunLight.castShadow !== false) {{
+    throw new Error('Expected sunLight.castShadow === false in fast mode');
+}}
+if (cenaCanvas.style.imageRendering !== 'pixelated') {{
+    throw new Error('Expected cenaCanvas.style.imageRendering === "pixelated" in fast mode, got: ' + cenaCanvas.style.imageRendering);
+}}
 if (pixelRatio !== 1) {{
-    throw new Error('Expected pixelRatio === 1 in fast mode, got: ' + pixelRatio);
+    throw new Error('Expected pixelRatio === 1 in fast mode on 2x display, got: ' + pixelRatio);
 }}
 if (localStorage.getItem('bi-graficos') !== 'leve') {{
     throw new Error('Expected bi-graficos === "leve" in localStorage in fast mode');
+}}
+
+// Verify 1080p desktop (devicePixelRatio = 1) downscales to 0.75 in fast mode
+window.devicePixelRatio = 1;
+{fast_sync_script}
+if (pixelRatio !== 0.75) {{
+    throw new Error('Expected pixelRatio === 0.75 in fast mode on 1x display, got: ' + pixelRatio);
 }}
 
 // Verify particles hook is active and can throttle
@@ -1036,10 +1082,20 @@ if (particleCalls >= 100 || particleCalls === 0) {{
 }}
 
 // Apply normal mode
+window.devicePixelRatio = 2;
 {normal_sync_script}
 
+if (shadowEnabled !== true) {{
+    throw new Error('Expected shadowMap.enabled === true in normal mode');
+}}
 if (shadowAutoUpdate !== true) {{
     throw new Error('Expected shadowMap.autoUpdate === true in normal mode');
+}}
+if (sunLight.castShadow !== true) {{
+    throw new Error('Expected sunLight.castShadow === true in normal mode');
+}}
+if (cenaCanvas.style.imageRendering !== '') {{
+    throw new Error('Expected cenaCanvas.style.imageRendering === "" in normal mode, got: ' + cenaCanvas.style.imageRendering);
 }}
 if (pixelRatio !== 1.5) {{
     throw new Error('Expected pixelRatio === 1.5 in normal mode, got: ' + pixelRatio);
@@ -1560,25 +1616,45 @@ if (gameKeyEvents.length !== 0) {
     throw new Error('Expected game keys to be consumed while Settings Overlay is open, got: ' + JSON.stringify(gameKeyEvents));
 }
 
-// Controls for Foreground FPS Cap, and all 5 toggles exist and emit update_settings IPC
+// Controls for Foreground FPS Cap, Background FPS Cap, and all 5 toggles exist and emit update_settings IPC
 const fgSelect = shadow.getElementById('blockidle-fg-fps-select');
+const bgSelect = shadow.getElementById('blockidle-bg-fps-select');
 const perfToggle = shadow.getElementById('blockidle-toggle-performance-mode');
 const hudToggle = shadow.getElementById('blockidle-toggle-fps-hud');
 const closeToTrayToggle = shadow.getElementById('blockidle-toggle-close-to-tray');
 const muteToggle = shadow.getElementById('blockidle-toggle-audio-mute');
 const fullscreenToggle = shadow.getElementById('blockidle-toggle-fullscreen');
 
-if (!fgSelect || !perfToggle || !hudToggle || !closeToTrayToggle || !muteToggle || !fullscreenToggle) {
+if (!fgSelect || !bgSelect || !perfToggle || !hudToggle || !closeToTrayToggle || !muteToggle || !fullscreenToggle) {
     throw new Error('Missing one or more required controls in Settings Overlay');
-}
-if (shadow.getElementById('blockidle-bg-fps-select')) {
-    throw new Error('Expected #blockidle-bg-fps-select to be removed from Settings Overlay');
 }
 if (shadow.getElementById('blockidle-toggle-keep-awake')) {
     throw new Error('Expected #blockidle-toggle-keep-awake to be removed from Settings Overlay');
 }
 
+// Global Reload Game button
+const reloadBtn = shadow.getElementById('blockidle-reload-game');
+if (!reloadBtn) {
+    throw new Error('Missing #blockidle-reload-game button in Settings Overlay');
+}
+if (!reloadBtn.textContent.includes('Recarregar') || !reloadBtn.textContent.includes('F5')) {
+    throw new Error('Expected reloadBtn to contain "Recarregar" and "F5", got: ' + reloadBtn.textContent);
+}
+if (!reloadBtn.title || (!reloadBtn.title.includes('zero') && !reloadBtn.title.includes('Recarrega'))) {
+    throw new Error('Expected reloadBtn to have descriptive title tooltip, got: ' + reloadBtn.title);
+}
+reloadBtn.click();
+if (!ipcMessages.some(m => m.type === 'reload_game_view')) {
+    throw new Error('Expected reload_game_view IPC after clicking #blockidle-reload-game');
+}
+if (overlay.style.display !== 'none') {
+    throw new Error('Expected clicking reload button to close settings overlay');
+}
+// Reopen overlay with F2 to continue testing
+dispatchKey('keydown', 'F2');
+
 if (!fgSelect.title || !fgSelect.title.includes('aberta') || !fgSelect.title.includes('60')) throw new Error('Expected fgSelect title tooltip, got: ' + fgSelect.title);
+if (!bgSelect.title || !bgSelect.title.includes('segundo plano')) throw new Error('Expected bgSelect title tooltip, got: ' + bgSelect.title);
 if (!perfToggle.title || !perfToggle.title.includes('sombras')) throw new Error('Expected perfToggle title tooltip, got: ' + perfToggle.title);
 if (!hudToggle.title || !hudToggle.title.includes('contador de quadros')) throw new Error('Expected hudToggle title tooltip, got: ' + hudToggle.title);
 if (!closeToTrayToggle.title || !closeToTrayToggle.title.includes('bandeja')) throw new Error('Expected closeToTrayToggle title tooltip, got: ' + closeToTrayToggle.title);
@@ -1586,6 +1662,7 @@ if (!muteToggle.title || !muteToggle.title.includes('áudio')) throw new Error('
 if (!fullscreenToggle.title || !fullscreenToggle.title.includes('tela cheia')) throw new Error('Expected fullscreenToggle title tooltip, got: ' + fullscreenToggle.title);
 
 fgSelect.change('Fps30');
+bgSelect.change('Fps15');
 perfToggle.change(undefined, true);
 hudToggle.change(undefined, true);
 closeToTrayToggle.change(undefined, true);
@@ -1595,6 +1672,7 @@ fullscreenToggle.change(undefined, true);
 const lastSettingsMsg = [...ipcMessages].reverse().find(m => m.type === 'update_settings');
 if (!lastSettingsMsg ||
     lastSettingsMsg.settings.foreground_fps_cap !== 'Fps30' ||
+    lastSettingsMsg.settings.background_fps_cap !== 'Fps15' ||
     lastSettingsMsg.settings.performance_mode !== true ||
     lastSettingsMsg.settings.fps_hud_visible !== true ||
     lastSettingsMsg.settings.close_to_tray !== true ||
@@ -1718,7 +1796,7 @@ console.log(JSON.stringify(ipcMessages));
     );
     assert_eq!(
         controller.settings().background_fps_cap,
-        BackgroundFpsCap::Fps0
+        BackgroundFpsCap::Fps15
     );
     assert!(controller.settings().performance_mode);
     assert!(controller.settings().fps_hud_visible);
@@ -2079,3 +2157,220 @@ fn resolves_target_executable_detects_appimage_env_or_falls_back_to_current_exe(
     let (default_target, _) = resolve_target_executable().expect("default resolution");
     assert!(!default_target.as_os_str().is_empty());
 }
+
+#[test]
+fn test_combat_rendering_and_hitmarks_stop_updating_after_idle_or_background_transition() {
+    let dir = tempdir().expect("tempdir");
+    let mut controller = ClientController::load_or_default(dir.path());
+    let init_script = controller.initialization_script();
+
+    let unfocus_sync_script = controller
+        .handle_focus_changed(false)
+        .into_iter()
+        .find_map(|e| match e {
+            PlatformEffect::SyncWebViewState(s) => Some(s),
+            _ => None,
+        })
+        .expect("unfocus sync script");
+
+    let focus_sync_script = controller
+        .handle_focus_changed(true)
+        .into_iter()
+        .find_map(|e| match e {
+            PlatformEffect::SyncWebViewState(s) => Some(s),
+            _ => None,
+        })
+        .expect("focus sync script");
+
+    let test_body = format!(
+        r#"
+// Mock game DOM canvas and Three.js renderer
+const cenaCanvas = document.createElement('canvas');
+cenaCanvas.id = 'cena';
+cenaCanvas.width = 1280;
+cenaCanvas.height = 720;
+cenaCanvas.clientWidth = 1280;
+cenaCanvas.clientHeight = 720;
+document.body.appendChild(cenaCanvas);
+
+let rendererSize = {{ w: 1280, h: 720 }};
+let renderCalls = 0;
+let renderListsDisposed = 0;
+window.__renderizador = {{
+    domElement: cenaCanvas,
+    setSize(w, h, updateStyle) {{
+        rendererSize = {{ w, h, updateStyle }};
+        cenaCanvas.width = w;
+        cenaCanvas.height = h;
+    }},
+    renderLists: {{
+        dispose() {{ renderListsDisposed++; }}
+    }},
+    info: {{
+        reset() {{}}
+    }},
+    render() {{
+        renderCalls++;
+    }}
+}};
+
+// Mock game HUD and combat scene matching blockidle main.js
+const hud = {{
+    barras: new Map(),
+    hitmarks: [],
+    tela(p) {{
+        return {{ x: p.x * 20, y: p.y * 20 }};
+    }},
+    textoDano(p, dano) {{
+        const el = document.createElement('div');
+        el.className = 'flut sombra flut-dano';
+        el.textContent = String(dano);
+        document.body.appendChild(el);
+        this.hitmarks.push({{ el, dano, x: p.x * 20, y: p.y * 20 }});
+    }},
+    barraMob(id, hp, hpMax, nome) {{
+        let b = this.barras.get(id);
+        if (!b) {{
+            b = document.createElement('div');
+            b.className = 'barra-mob';
+            document.body.appendChild(b);
+            this.barras.set(id, b);
+        }}
+        b.hp = hp;
+        b.hpMax = hpMax;
+        b.textContent = nome + ' ' + hp + '/' + hpMax;
+        return b;
+    }},
+    posicionarBarra(id, p) {{
+        const b = this.barras.get(id);
+        if (!b) return;
+        b.positioned = true;
+    }}
+}};
+
+const C = {{
+    nome: 'masmorra',
+    mobs: new Map()
+}};
+
+function nascer(mobs) {{
+    for (const m of mobs) {{
+        C.mobs.set(m.id, {{ ...m, vivo: true }});
+        hud.barraMob(m.id, m.hp, m.hpMax, m.nome);
+    }}
+}}
+
+function handleGolpe(ev) {{
+    const mb = C.mobs.get(ev.id);
+    hud.barraMob(ev.id, ev.hp, mb ? mb.hpMax : ev.hp, mb ? mb.nome : '');
+    const escondido = document.hidden;
+    if (!escondido && mb) {{
+        hud.textoDano(mb.pos, ev.dano);
+    }}
+}}
+
+nascer([{{ id: 1, nome: 'Zombie', hp: 100, hpMax: 100, pos: {{ x: 10, y: 5 }} }}]);
+
+function quadro() {{
+    window.requestAnimationFrame(quadro);
+    for (const [id, mb] of C.mobs) {{
+        if (mb.vivo) hud.posicionarBarra(id, mb.pos);
+    }}
+    window.__renderizador.render();
+}}
+window.requestAnimationFrame(quadro);
+
+// 1. Initial foreground execution: delivers frames, hitmarks, and updates mob 1
+stepNativeFrame(16);
+handleGolpe({{ id: 1, dano: 25, hp: 75 }});
+stepNativeFrame(16);
+
+if (renderCalls === 0) throw new Error('Expected 3D render calls in foreground');
+if (hud.hitmarks.length !== 1 || hud.hitmarks[0].dano !== 25) {{
+    throw new Error('Expected 1 hitmark in foreground, got: ' + hud.hitmarks.length);
+}}
+const b1 = hud.barras.get(1);
+if (!b1 || b1.hp !== 75 || !b1.positioned) {{
+    throw new Error('Expected mob 1 bar to be updated and positioned in foreground');
+}}
+
+// 2. User unfocuses window (or window is in background on secondary display)
+let resumeFired = 0;
+document.addEventListener('visibilitychange', function(e) {{
+    if (e.__blockidleResume) {{
+        resumeFired++;
+    }}
+}});
+
+{unfocus_sync_script}
+const rendersBeforeUnfocus = renderCalls;
+
+// Idle combat advances on server
+for (let i = 0; i < 30; i++) {{
+    stepNativeFrame(16);
+    if (i === 5) {{
+        handleGolpe({{ id: 1, dano: 75, hp: 0 }});
+        C.mobs.delete(1);
+        nascer([{{ id: 2, nome: 'Skeleton', hp: 120, hpMax: 120, pos: {{ x: 15, y: 8 }} }}]);
+    }}
+    if (i === 15) {{
+        handleGolpe({{ id: 2, dano: 40, hp: 80 }});
+    }}
+}}
+
+// Verify that while unfocused/idle, 15 FPS cap continues rendering without freezing
+const rendersInBg = renderCalls - rendersBeforeUnfocus;
+if (rendersInBg === 0) {{
+    throw new Error('Expected background rendering to continue at 15 FPS, got 0 frames');
+}}
+const b2 = hud.barras.get(2);
+if (!b2 || b2.hp !== 80 || !b2.positioned) {{
+    throw new Error('Expected mob 2 bar to be positioned and updated during background combat');
+}}
+if (!hud.hitmarks.some(h => h.dano === 40)) {{
+    throw new Error('Expected mob 2 hitmark (40) to be spawned during background combat');
+}}
+
+// 3. User returns/refocuses window
+{focus_sync_script}
+handleGolpe({{ id: 2, dano: 50, hp: 30 }});
+stepNativeFrame(16);
+
+if (b2.hp !== 30) {{
+    throw new Error('Expected mob 2 bar to update to hp 30 after refocus');
+}}
+if (!hud.hitmarks.some(h => h.dano === 50)) {{
+    throw new Error('Expected mob 2 hitmark (50) to spawn after refocus');
+}}
+
+// 4. Test paused mode (Fps0): unfocus halts rendering, and refocus dispatches synthetic resume event
+window.__blockidleApplyState({{
+    ...window.__BLOCKIDLE_CLIENT_STATE__,
+    effective_fps_cap: 0,
+    window_focused: false
+}});
+const rendersBeforePause = renderCalls;
+for (let i = 0; i < 10; i++) {{
+    stepNativeFrame(16);
+}}
+if (renderCalls !== rendersBeforePause) {{
+    throw new Error('Expected 0 frames rendered while effective cap is 0 FPS');
+}}
+const resumeCountBefore = resumeFired;
+window.__blockidleApplyState({{
+    ...window.__BLOCKIDLE_CLIENT_STATE__,
+    effective_fps_cap: 60,
+    window_focused: true
+}});
+if (resumeFired !== resumeCountBefore + 1) {{
+    throw new Error('Expected synthetic visibilitychange resume event to fire upon unpausing from 0 FPS');
+}}
+
+console.log('COMBAT_RENDER_OK');
+"#
+    );
+
+    let stdout = run_node_with_dom("combat_render_freeze", &init_script, &test_body);
+    assert!(stdout.contains("COMBAT_RENDER_OK"));
+}
+

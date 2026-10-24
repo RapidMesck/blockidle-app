@@ -40,6 +40,18 @@ _Avoid_: Background exit, minimize on close
 A user-configurable keyboard shortcut intercepted by the Client Shell to trigger client actions (such as fullscreen, reload, mute, tray hide, or toggling the Settings Overlay).
 _Avoid_: Hotkey, macro
 
+**Performance Mode**:
+An in-client rendering optimization that reduces GPU workload without capping user-configured frame rates. When enabled, it disables Three.js shadow maps (`shadowMap.enabled = false`), turns off directional sun shadow casting, downscales WebGL buffer resolution to `0.75x` on standard displays with pixelated scaling, and throttles cosmetic particles.
+_Avoid_: Low graphics, potato mode
+
+**Synthetic Resume Event**:
+A custom `visibilitychange` event flagged with `__blockidleResume` dispatched by the Client Shell when transitioning from `0 FPS` (paused) to an active frame rate. It passes through Keep Awake suppression to instruct the web game's network layer (`rede.js`) to execute `resync()`, reconstructing active mobs and HUD health bars without triggering session termination.
+_Avoid_: Fake tab switch, wake ping
+
+**Reload Game View**:
+A global action (triggered via `F5` or the Settings Overlay button) that reloads the web view URL, rebuilding the web game DOM, Three.js context, and session data completely from scratch.
+_Avoid_: F5 spam, page refresh
+
 **Auto-Updater**:
 The background client subsystem that checks GitHub Releases for new client versions, downloads the platform-appropriate binary or AppImage, and verifies integrity before applying.
 _Avoid_: Updater wizard, launcher updater

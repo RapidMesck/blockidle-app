@@ -84,20 +84,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Cache APT packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-linux-release-${{ runner.os }}-v1
+          restore-keys: |
+            apt-linux-release-${{ runner.os }}-
+
       - name: Install Linux system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
             libwebkit2gtk-4.1-dev \
             libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            libxdo-dev \
-            pkg-config \
-            build-essential \
-            file \
-            desktop-file-utils \
-            curl \
-            ca-certificates
+            libayatana-appindicator3-dev
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -110,8 +111,8 @@ jobs:
       - name: Cache Cargo build
         uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
-        run: cargo test --locked
+      - name: Run tests (release mode)
+        run: cargo test --release --locked
 
       - name: Build release binary
         run: cargo build --release --locked
@@ -224,10 +225,12 @@ jobs:
           EOF
           chmod 755 "${APPDIR}/AppRun"
 
-          curl -fsSL -o appimagetool-x86_64.AppImage \
-            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
-          chmod +x appimagetool-x86_64.AppImage
-          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool-x86_64.AppImage \
+          if [ ! -f /tmp/appimagetool-x86_64.AppImage ]; then
+            curl -fsSL --retry 3 -o /tmp/appimagetool-x86_64.AppImage \
+              "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+            chmod +x /tmp/appimagetool-x86_64.AppImage
+          fi
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 /tmp/appimagetool-x86_64.AppImage \
             "${APPDIR}" "dist/blockidle-app-${TAG}-x86_64.AppImage"
           chmod 755 "dist/blockidle-app-${TAG}-x86_64.AppImage"
 
@@ -260,8 +263,8 @@ jobs:
       - name: Cache Cargo build
         uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
-        run: cargo test --locked
+      - name: Run tests (release mode)
+        run: cargo test --release --locked
 
       - name: Build release binary
         run: cargo build --release --locked
